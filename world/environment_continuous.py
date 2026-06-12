@@ -3,10 +3,17 @@ Continuous Environment.
 
 Run this file to test the environment with a random agent.
 """
+from pathlib import Path
+import sys
+# Adds the parent directory above "world" folder to Python's search path, because I was getting an error that 
+# it wasn't finding the "agents" folder, when I was trying to quick-run in VS Code instead of doing it from the terminal
+repo_root = Path(__file__).resolve().parents[1]
+if str(repo_root) not in sys.path:
+    sys.path.append(str(repo_root))
+
 import io
 import random
 from math import cos, sin, pi, degrees, radians
-from pathlib import Path
 from warnings import warn
 from time import time, sleep
 from datetime import datetime
@@ -16,8 +23,10 @@ from tqdm import trange
 from PIL import Image
 from shapely.geometry import Point, LineString, box
 from shapely.ops import unary_union
+from shapely.strtree import STRtree
 
-from agents import BaseAgent
+from agents.base_agent import BaseAgent
+from agents.DQN_agent import DQNAgent
 from world.helpers import save_results
 from world.grid_continuous import GridContinuous
 
@@ -29,7 +38,8 @@ class EnvironmentContinuous:
     TURN_ANGLE = radians(15)
 
     N_ACTIONS = 3        # 0 = forward, 1 = turn left, 2 = turn right
-    STATE_SIZE = 3       # (x, y, theta)
+    N_RAYS = 18 # number of rays in the lidar state representation (18 rays equal a ray every 20 degrees)
+    STATE_SIZE = 3 + N_RAYS # (x, y, theta) + lidar rays
 
     def __init__(self,
                  grid_fp: Path,
@@ -62,7 +72,7 @@ class EnvironmentContinuous:
             random_seed: The random seed to use for this environment. If None
                 is provided, then the seed will be set to 0.
         """
-        random.seed(random_seed)
+        random.seed(random_seed) # maybe we would like to keep this fixed instead for reproducibility in the future?
 
         # Initialize Grid
         if not grid_fp.exists():
@@ -73,6 +83,7 @@ class EnvironmentContinuous:
         self.agent_start_pos = agent_start_pos
         self.terminal_state = False
         self.sigma = sigma
+        self.MAX_LIDAR_RANGE = 5
 
         # Set up reward function
         if reward_fn is None:
@@ -129,7 +140,9 @@ class EnvironmentContinuous:
     # Geometry / start position
     # ------------------------------------------------------------------ #
     def _build_geometry(self):
-        """Builds the Shapely wall and target geometry from the grid."""
+        """Builds the Shapely wall and target geometry from the grid.
+        Also, builds a STR tree of the obstacles to speed up ray intersection queries."""
+        
         grid = GridContinuous.from_file(self.grid_fp)
         self.cells = grid.cells
         self.n_cols, self.n_rows = self.cells.shape
@@ -142,6 +155,14 @@ class EnvironmentContinuous:
         self.targets = [box(int(c), int(r), int(c) + 1, int(r) + 1)
                         for c, r in np.argwhere(self.cells == 3)]
         self.n_targets_total = len(self.targets)
+
+
+        # Build a tree of the obstacles to speed up ray intersection queries
+        self.obstacles = list(self.walls.geoms) if hasattr(self.walls, 'geoms') else list(self.walls) # because MultiLineString is not iterable itself, 
+                                                                                  # we need to extract its constituent parts
+        self.wall_tree = STRtree(self.obstacles) # this is done to speed up intersection checks, 
+                                           # only looking at points where the rays shoot out toward
+                                           # offers signficant speed up compared to checking all obstacles (~4x on my pc)
 
     def _validate_start_cell(self, cell: tuple[int, int]):
         c, r = cell
@@ -169,11 +190,35 @@ class EnvironmentContinuous:
         self.y = cell[1] + 0.5
         self.theta = random.uniform(-pi, pi)
 
+    def _get_ray(self, x, y, ray_angle, walls, max_range=5.0):
+        end_x = x + max_range * cos(ray_angle)
+        end_y = y + max_range * sin(ray_angle)
+        ray = LineString([(x, y), (end_x, end_y)])
+
+        min_dist = max_range
+
+        obstacles_in_the_way = self.wall_tree.query(ray) # indexes the obstacles that are in the path of the ray
+
+        for obstacle_idx in obstacles_in_the_way:
+            intersection = ray.intersection(self.obstacles[obstacle_idx])
+            if not intersection.is_empty:
+                if intersection.geom_type == 'Point':
+                    dist = Point(x, y).distance(intersection)
+                    min_dist = min(min_dist, dist)
+                elif intersection.geom_type == 'MultiPoint':
+                    for point in intersection:
+                        dist = Point(x, y).distance(point)
+                        min_dist = min(dist, min_dist)
+        return min_dist
+
     # ------------------------------------------------------------------ #
     # Core API
     # ------------------------------------------------------------------ #
     def _get_state(self) -> np.ndarray:
-        return np.array([self.x, self.y, self.theta], dtype=np.float32)
+        # the entire 360 degree field is covered by 2*pi radians
+        ray_angles = [self.theta + i * ((2*pi)/self.N_RAYS) for i in range(self.N_RAYS)]
+        lidar_rays = [self._get_ray(self.x, self.y, ray_angle, self.walls, max_range=self.MAX_LIDAR_RANGE) for ray_angle in ray_angles]
+        return np.array([self.x, self.y, self.theta, *lidar_rays], dtype=np.float32)
 
     def reset(self, **kwargs) -> np.ndarray:
         """Reset the environment to an initial state.
@@ -221,7 +266,7 @@ class EnvironmentContinuous:
         ``AGENT_RADIUS`` of any wall.
         """
         nx = self.x + self.MOVE_DISTANCE * cos(self.theta)
-        ny = self.y + self.MOVE_DISTANCE * sin(self.theta)
+        ny = self.y - self.MOVE_DISTANCE * sin(self.theta)
         motion = LineString([(self.x, self.y), (nx, ny)])
         if self.walls.distance(motion) < self.AGENT_RADIUS:
             return False  # collision: stay in place
@@ -281,8 +326,10 @@ class EnvironmentContinuous:
                 collided = True
                 self.world_stats["total_failed_moves"] += 1
         else:                                        # turn in place
-            self.theta += self.TURN_ANGLE if actual_action == 1 \
-                else -self.TURN_ANGLE
+            if actual_action == 1: # turn left = counter-clockwise on screen = theta increases
+                self.theta += self.TURN_ANGLE
+            else: # turn right = clockwise on screen = theta decreases
+                self.theta -= self.TURN_ANGLE
             # Wrap to [-pi, pi].
             self.theta = (self.theta + pi) % (2 * pi) - pi
             self.world_stats["total_turns"] += 1
@@ -335,8 +382,17 @@ class EnvironmentContinuous:
         ax.add_patch(Circle((self.x, self.y), self.AGENT_RADIUS,
                             facecolor="#E1602F", edgecolor="black", zorder=3))
         ax.plot([self.x, self.x + self.AGENT_RADIUS * cos(self.theta)],
-                [self.y, self.y + self.AGENT_RADIUS * sin(self.theta)],
+                [self.y, self.y - self.AGENT_RADIUS * sin(self.theta)],
                 color="black", linewidth=1.5, zorder=4)
+        
+        # add lidar rays to visualizations
+        ray_angles = [self.theta + i * ((2*pi)/self.N_RAYS) for i in range(self.N_RAYS)]
+        ray_lengths = self._get_state()[3:] # the first 3 elements of the state are (x, y, theta), the rest are lidar rays
+        for ray_angle, ray_length in zip(ray_angles, ray_lengths):
+            end_x = self.x + ray_length * cos(ray_angle)
+            end_y = self.y + ray_length * sin(ray_angle)
+            ax.plot([self.x, end_x], [self.y, end_y], color="red", linewidth=1.0, zorder=1)
+
 
         ax.set_xlim(0, self.n_cols)
         ax.set_ylim(0, self.n_rows)
@@ -384,10 +440,10 @@ class EnvironmentContinuous:
                        show_images: bool = False):
         """Evaluates a trained agent and saves stats + a trajectory image."""
         env = EnvironmentContinuous(grid_fp=grid_fp,
-                                    no_gui=True,
+                                    no_gui=False,
                                     sigma=sigma,
                                     agent_start_pos=agent_start_pos,
-                                    target_fps=-1,
+                                    target_fps=100,
                                     random_seed=random_seed)
         state = env.reset()
         path = [(env.x, env.y)]
@@ -409,15 +465,20 @@ class EnvironmentContinuous:
 if __name__ == "__main__":
     import sys
 
-    class _Random3Agent(BaseAgent):
-        def take_action(self, state):
-            return random.randint(0, 2)
+    # class _Random3Agent(BaseAgent):
+    #     def take_action(self, state):
+    #         return random.randint(0, 2)
 
-        def update(self, state, reward, action):
-            pass
+    #     def update(self, state, reward, action):
+    #         pass
+
+    agent = DQNAgent(input_dim=EnvironmentContinuous.STATE_SIZE, output_dim=EnvironmentContinuous.N_ACTIONS, \
+                    gamma=0.99, learning_rate=1e-3, epsilon_start=1.0, epsilon_end=0.01, \
+                    batch_size=64, replay_buffer_size=10000, target_update_frequency=1000)
+
 
     repo_root = Path(__file__).resolve().parents[1]
     grid_fp = Path(sys.argv[1]) if len(sys.argv) > 1 \
         else repo_root / "grid_configs" / "A1_grid.npy"
-    EnvironmentContinuous.evaluate_agent(grid_fp, _Random3Agent(),
-                                         max_steps=500, random_seed=0)
+    EnvironmentContinuous.evaluate_agent(grid_fp, agent, sigma=0.2,
+                                         max_steps=1000, random_seed=0)
