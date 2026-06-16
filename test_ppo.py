@@ -27,10 +27,8 @@ RESULTS_DIR = Path("results/ppo_only")
 # Goal-reward magnitude of each reward function; used to auto-set --reward_scale
 # so the agent trains on rewards of magnitude ~1.
 REWARD_SCALES = {
-    "default": 100.0,        # goal=100, step=-1, wall=-5
-    "low": 10.0,             # goal=100, step=-4, wall=-5
-    "zero": 100.0,           # goal=100, step=0
-    "bfs": None,             # auto-set from max_dist at runtime
+    "default": 10.0,         # goal=10, step=-1, wall=-5
+    "high": 100.0,         # goal=10000, step=-1, wall=-5
 }
 
 
@@ -47,7 +45,7 @@ def parse_args():
 
     parser.add_argument("--episodes", type=int, default=1000)
     parser.add_argument("--iters", type=int, default=200)
-    parser.add_argument("--train_start_mode", choices=("random", "fixed"), default="random",
+    parser.add_argument("--train_start_mode", choices=("random", "fixed"), default="fixed",
                         help="Training start positions. Evaluation always uses --start_pos.")
     parser.add_argument("--eval_episodes", type=int, default=1)
     parser.add_argument("--eval_max_steps", type=int, default=500)
@@ -285,41 +283,10 @@ def save_ppo_checkpoint(
     return str(checkpoint_path)
 
 
-def bfs_shortest_path(grid_fp: Path, start: tuple[int, int]) -> int | None:
-    grid = np.load(grid_fp)
-    targets = np.argwhere(grid == 3)
-    if len(targets) == 0:
-        raise ValueError(f"No target cell with value 3 found in {grid_fp}")
-
-    target = (int(targets[0][0]), int(targets[0][1]))
-    if start == target:
-        return 0
-
-    rows, cols = grid.shape
-    visited = np.zeros((rows, cols), dtype=bool)
-    visited[start] = True
-    queue = deque([(start, 0)])
-
-    while queue:
-        (row, col), distance = queue.popleft()
-        for dr, dc in ACTION_DELTAS:
-            nr, nc = row + dr, col + dc
-            if not (0 <= nr < rows and 0 <= nc < cols):
-                continue
-            if visited[nr, nc] or grid[nr, nc] in (1, 2):
-                continue
-            if (nr, nc) == target:
-                return distance + 1
-            visited[nr, nc] = True
-            queue.append(((nr, nc), distance + 1))
-
-    return None
-
-
 ACTION_DELTAS = ((0, 1), (0, -1), (-1, 0), (1, 0))
 
 
-def make_training_start_sampler(grid_fp: Path, fixed_start: tuple[int, int],
+def make_training_start_sampler(grid_fp: Path, fixed_start: tuple[float, float],
                                 mode: str, seed: int):
     if mode == "fixed":
         return lambda: fixed_start
@@ -333,9 +300,10 @@ def make_training_start_sampler(grid_fp: Path, fixed_start: tuple[int, int],
 
     def random_start():
         row, col = empty_cells[int(rng.integers(len(empty_cells)))]
-        return int(row), int(col)
+        return float(row), float(col)
 
     return random_start
+
 
 
 def save_training_progress_image(successes: list[int], out_path: Path,
@@ -417,13 +385,13 @@ def train_ppo(agent, env, episodes: int, iters: int, start_sampler,
     episode_learning_returns = []
     episode_steps = []
     successes = []
-    visit_counts = np.zeros_like(np.load(env.grid_fp), dtype=np.int64)
+    
 
     for episode in trange(episodes, desc="Training PPO"):
         state = env.reset(agent_start_pos=start_sampler())
         agent.new_episode(state)
-        visit_counts[state] += 1
-        episode_visit_counts = {state: 1}
+        
+        
 
         total_reward = 0.0
         total_learning_reward = 0.0
@@ -431,16 +399,12 @@ def train_ppo(agent, env, episodes: int, iters: int, start_sampler,
         steps = 0
 
         for _ in range(iters):
+            state = tuple(state)
             action = agent.take_action(state)
-            state, reward, terminated, info = env.step(action)
-            revisits = episode_visit_counts.get(state, 0)
-            loop_penalty = repeat_visit_penalty * revisits
-            learning_reward = reward - loop_penalty
-
+            state, reward, terminated, info = env.step(action)           
+            state = tuple(state)
+            learning_reward = reward
             agent.update(state, learning_reward, info["actual_action"])
-            visit_counts[state] += 1
-            episode_visit_counts[state] = revisits + 1
-
             total_reward += reward
             total_learning_reward += learning_reward
             steps += 1
@@ -466,7 +430,6 @@ def train_ppo(agent, env, episodes: int, iters: int, start_sampler,
         "train_avg_learning_return_last_100": float(np.mean(episode_learning_returns[-100:])),
         "train_success_rate_last_100": float(np.mean(successes[-100:])),
         "train_avg_steps_last_100": float(np.mean(episode_steps[-100:])),
-        "train_visit_counts": visit_counts,
         "train_successes_by_episode": successes,
     }
 
@@ -487,22 +450,21 @@ def evaluate_ppo(agent, Environment, grid_fp, reward_fn, start_pos, sigma,
 
     for ep in trange(episodes, desc="Evaluating PPO"):
         start_time = time.perf_counter()
-        stats, _, _ = Environment.evaluate_agent(
+        #stats, _, _ = Environment.evaluate_agent(
+        Environment.evaluate_agent(
             grid_fp=grid_fp,
             agent=agent,
             max_steps=max_steps,
             sigma=sigma,
             agent_start_pos=start_pos,
             random_seed=seed + ep,
-            reward_fn=reward_fn,
-            gamma=gamma,
         )
         times.append(time.perf_counter() - start_time)
-        rewards.append(float(stats["cumulative_reward"]))
-        steps.append(int(stats["total_steps"]))
-        failed_moves.append(int(stats["total_failed_moves"]))
-        agent_moves.append(int(stats["total_agent_moves"]))
-        successes.append(1 if int(stats.get("targets_remaining", 1)) == 0 else 0)
+        # rewards.append(float(stats["cumulative_reward"]))
+        # steps.append(int(stats["total_steps"]))
+        # failed_moves.append(int(stats["total_failed_moves"]))
+        # agent_moves.append(int(stats["total_agent_moves"]))
+        # successes.append(1 if int(stats.get("targets_remaining", 1)) == 0 else 0)
 
     if old_epsilon is not None:
         agent.epsilon = old_epsilon
@@ -552,222 +514,6 @@ def save_path_image(agent, Environment, visualize_path, grid_fp, reward_fn,
         "image_total_agent_moves": int(stats["total_agent_moves"]),
         "image_reached_goal": int(stats.get("targets_remaining", 1)) == 0,
     }
-
-
-def save_policy_entropy_image(agent, grid_fp: Path, start_pos: tuple[int, int],
-                              out_path: Path):
-    old_epsilon = getattr(agent, "epsilon", None)
-    if old_epsilon is not None:
-        agent.epsilon = 0.0
-    agent.set_training(False)
-
-    grid = np.load(grid_fp)
-    scalar = 30
-    image_size = tuple((g * scalar) + 2 for g in grid.shape)
-
-    wall_colors = {
-        1: (57, 57, 57, 255),
-        2: (57, 57, 57, 255),
-        3: (34, 139, 34, 255),
-    }
-    entropy_grid = np.full(grid.shape, np.nan, dtype=float)
-    max_entropy = math.log(4)
-
-    image = Image.new("RGBA", image_size, (255, 255, 255, 255))
-    draw = ImageDraw.Draw(image)
-
-    for col in range(grid.shape[0]):
-        for row in range(grid.shape[1]):
-            if grid[col, row] not in (0, 4):
-                continue
-            probs = agent.policy((col, row))
-            valid_probs = probs[probs > 0]
-            entropy_grid[col, row] = -float(np.sum(valid_probs * np.log(valid_probs)))
-
-    for row in range(grid.shape[1]):
-        y = row * scalar + 1
-        for col in range(grid.shape[0]):
-            x = col * scalar + 1
-            value = int(grid[col, row])
-            fill = wall_colors.get(value, (255, 255, 255, 255))
-
-            if value in (0, 4) and not np.isnan(entropy_grid[col, row]):
-                ratio = min(1.0, entropy_grid[col, row] / max_entropy) if max_entropy > 0 else 0.0
-                red = int(255 * ratio)
-                green = int(230 * (1.0 - ratio))
-                blue = int(255 * (1.0 - ratio))
-                fill = (red, green, blue, 255)
-
-            if (col, row) == start_pos:
-                fill = (242, 211, 82, 255)
-
-            draw.rectangle(
-                (x, y, x + scalar, y + scalar),
-                fill=fill,
-                outline=(220, 220, 220, 255),
-            )
-
-            if value not in (0, 4):
-                continue
-
-            probs = agent.policy((col, row))
-            action = int(np.argmax(probs))
-            dx, dy = ACTION_DELTAS[action]
-
-            center_x = col * scalar + scalar // 2
-            center_y = row * scalar + scalar // 2
-            end_x = center_x + dx * int(scalar * 0.32)
-            end_y = center_y + dy * int(scalar * 0.32)
-
-            draw.line(
-                (center_x, center_y, end_x, end_y),
-                fill=(25, 90, 210, 255),
-                width=2,
-            )
-
-            angle = math.atan2(end_y - center_y, end_x - center_x)
-            head_len = 5
-            for offset in (math.pi * 0.78, -math.pi * 0.78):
-                hx = end_x + head_len * math.cos(angle + offset)
-                hy = end_y + head_len * math.sin(angle + offset)
-                draw.line((end_x, end_y, hx, hy), fill=(25, 90, 210, 255), width=2)
-
-            if not np.isnan(entropy_grid[col, row]):
-                text = f"{entropy_grid[col, row]:.2f}"
-                bbox = draw.textbbox((0, 0), text)
-                tw = bbox[2] - bbox[0]
-                draw.text(
-                    (x + (scalar - tw) / 2, y + 2),
-                    text,
-                    fill=(0, 0, 0, 255),
-                )
-
-    image.save(out_path)
-
-    if old_epsilon is not None:
-        agent.epsilon = old_epsilon
-
-    finite_entropy = entropy_grid[~np.isnan(entropy_grid)]
-    return {
-        "policy_entropy_image_path": str(out_path),
-        "policy_entropy_mean": float(np.mean(finite_entropy)) if len(finite_entropy) else None,
-        "policy_entropy_min": float(np.min(finite_entropy)) if len(finite_entropy) else None,
-        "policy_entropy_max": float(np.max(finite_entropy)) if len(finite_entropy) else None,
-    }
-
-
-def save_policy_probs_image(agent, grid_fp: Path, start_pos: tuple[int, int],
-                            out_path: Path):
-    """Large image: all four action probabilities per cell in compass layout.
-
-    Each cell is 120×120 px.  For every direction the probability is printed
-    as a large number at the cell edge and a proportional arrow is drawn from
-    the centre.  Dominant action is blue; the others are light grey.
-    """
-    from PIL import ImageFont
-    try:
-        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 20)
-    except Exception:
-        try:
-            font = ImageFont.load_default(size=20)
-        except Exception:
-            font = ImageFont.load_default()
-
-    old_epsilon = getattr(agent, "epsilon", None)
-    if old_epsilon is not None:
-        agent.epsilon = 0.0
-    agent.set_training(False)
-
-    grid   = np.load(grid_fp)
-    scalar = 120
-    pad    = 2
-    width  = grid.shape[0] * scalar + 2 * pad
-    height = grid.shape[1] * scalar + 2 * pad
-
-    wall_colors = {
-        1: (57,  57,  57,  255),
-        2: (57,  57,  57,  255),
-        3: (34,  139, 34,  255),
-    }
-    COLOR_BEST = (25,  90,  210, 255)
-    COLOR_REST = (180, 180, 180, 255)
-
-    image = Image.new("RGBA", (width, height), (255, 255, 255, 255))
-    draw  = ImageDraw.Draw(image)
-
-    # ACTION_DELTAS: 0→(dr=0,dc=+1) down, 1→(dr=0,dc=-1) up,
-    #                2→(dr=-1,dc=0) left,  3→(dr=+1,dc=0) right  (in image coords)
-    MAX_ARROW = scalar // 2 - 10   # max shaft length in px
-
-    for col in range(grid.shape[0]):
-        for row in range(grid.shape[1]):
-            cx = pad + col * scalar
-            cy = pad + row * scalar
-            value = int(grid[col, row])
-            fill  = wall_colors.get(value, (250, 250, 250, 255))
-            if (col, row) == start_pos:
-                fill = (242, 211, 82, 255)
-            draw.rectangle((cx, cy, cx + scalar - 1, cy + scalar - 1),
-                            fill=fill, outline=(180, 180, 180, 255), width=1)
-
-            if value not in (0, 4):
-                continue
-
-            probs    = agent.policy((col, row))
-            best_a   = int(np.argmax(probs))
-            center_x = cx + scalar // 2
-            center_y = cy + scalar // 2
-
-            for action, (dr, dc) in enumerate(ACTION_DELTAS):
-                p     = float(probs[action])
-                color = COLOR_BEST if action == best_a else COLOR_REST
-                lw    = 5 if action == best_a else 3
-
-                # --- arrow: minimum visible length so even low-prob arrows show ---
-                shaft = max(16, int(MAX_ARROW * p))
-                ex    = center_x + dr * shaft
-                ey    = center_y + dc * shaft
-                draw.line((center_x, center_y, ex, ey), fill=color, width=lw)
-                angle   = math.atan2(ey - center_y, ex - center_x)
-                head_ln = max(10, int(shaft * 0.45))
-                for off in (math.pi * 0.75, -math.pi * 0.75):
-                    hx = ex + head_ln * math.cos(angle + off)
-                    hy = ey + head_ln * math.sin(angle + off)
-                    draw.line((ex, ey, hx, hy), fill=color, width=lw)
-
-                # --- probability number, hugging the cell edge ---
-                text = f"{p:.2f}"
-                bb   = draw.textbbox((0, 0), text, font=font)
-                tw, th = bb[2] - bb[0], bb[3] - bb[1]
-
-                margin = 5
-                if dc == -1:    # up
-                    tx = cx + (scalar - tw) // 2
-                    ty = cy + margin
-                elif dc == 1:   # down
-                    tx = cx + (scalar - tw) // 2
-                    ty = cy + scalar - th - margin
-                elif dr == -1:  # left
-                    tx = cx + margin
-                    ty = cy + (scalar - th) // 2
-                else:           # right
-                    tx = cx + scalar - tw - margin
-                    ty = cy + (scalar - th) // 2
-
-                # white halo so number is readable over arrow
-                for ox, oy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
-                    draw.text((tx + ox, ty + oy), text,
-                              fill=(255, 255, 255, 200), font=font)
-                draw.text((tx, ty), text, fill=color, font=font)
-
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    image.save(out_path)
-
-    if old_epsilon is not None:
-        agent.epsilon = old_epsilon
-
-    return {"policy_probs_image_path": str(out_path)}
-
 
 def save_training_visits_image(grid_fp: Path, visit_counts: np.ndarray, out_path: Path):
     grid = np.load(grid_fp)
@@ -951,26 +697,7 @@ def main():
             f"(created_at={resume_metadata.get('created_at')})"
         )
 
-    if not args.no_image:
-        init_entropy_path = RESULTS_DIR / f"{stamp}_init_policy_entropy.png"
-        init_probs_path   = RESULTS_DIR / f"{stamp}_init_policy_probs.png"
-        init_stats = save_policy_entropy_image(
-            agent=agent, grid_fp=args.grid,
-            start_pos=start_pos, out_path=init_entropy_path,
-        )
-        save_policy_probs_image(
-            agent=agent, grid_fp=args.grid,
-            start_pos=start_pos, out_path=init_probs_path,
-        )
-        print(
-            f"Initial policy entropy — "
-            f"mean={init_stats['policy_entropy_mean']:.4f}  "
-            f"min={init_stats['policy_entropy_min']:.4f}  "
-            f"max={init_stats['policy_entropy_max']:.4f}  "
-            f"(max possible={math.log(4):.4f})"
-        )
-        print(f"Initial policy entropy image : {init_entropy_path}")
-        print(f"Initial policy probs image   : {init_probs_path}")
+
 
     train_start = time.perf_counter()
     train_metrics = train_ppo(
@@ -982,7 +709,6 @@ def main():
         args.repeat_visit_penalty,
     )
     train_time = time.perf_counter() - train_start
-    visit_counts = train_metrics.pop("train_visit_counts")
     successes_by_episode = train_metrics.pop("train_successes_by_episode")
 
     eval_metrics = evaluate_ppo(
@@ -1001,10 +727,7 @@ def main():
     image_metrics = {}
     if not args.no_image:
         image_path = RESULTS_DIR / f"{stamp}_path.png"
-        visits_image_path = RESULTS_DIR / f"{stamp}_training_visits.png"
         progress_image_path = RESULTS_DIR / f"{stamp}_training_progress.png"
-        entropy_image_path = RESULTS_DIR / f"{stamp}_policy_entropy.png"
-        probs_image_path = RESULTS_DIR / f"{stamp}_policy_probs.png"
         image_metrics = save_path_image(
             agent=agent,
             Environment=EnvironmentContinuous,
@@ -1017,23 +740,6 @@ def main():
             gamma=eval_gamma,
             out_path=image_path,
         )
-        image_metrics.update(save_training_visits_image(
-            grid_fp=args.grid,
-            visit_counts=visit_counts,
-            out_path=visits_image_path,
-        ))
-        image_metrics.update(save_policy_entropy_image(
-            agent=agent,
-            grid_fp=args.grid,
-            start_pos=start_pos,
-            out_path=entropy_image_path,
-        ))
-        image_metrics.update(save_policy_probs_image(
-            agent=agent,
-            grid_fp=args.grid,
-            start_pos=start_pos,
-            out_path=probs_image_path,
-        ))
         image_metrics.update(save_training_progress_image(
             successes_by_episode,
             progress_image_path,

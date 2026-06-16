@@ -5,7 +5,7 @@
 #python train.py grid_configs/super_hard.npy --no_gui --episodes 2000 --iter 200 --sigma 0 --train_gamma 0.999
 
 
-python test_ppo.py --grid grid_configs/A1_grid.npy --episodes 5000 --reward default --gamma 0.999 --fourier_freqs 64
+python test_ppo.py --grid grid_configs/A1_grid.npy --episodes 5 --reward default --gamma 0.999 --fourier_freqs 64
 
 
 #python test_dqn.py --grid grid_configs/small_grid.npy --episodes 2000 --reward low --gamma 0.99 --step_penalty_threshold 50

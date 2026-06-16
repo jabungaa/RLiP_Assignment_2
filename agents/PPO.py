@@ -22,13 +22,7 @@ from torch.distributions import Categorical
 
 from agents import BaseAgent
 
-NUM_ACTIONS = 4
-ACTION_TO_DELTA = {
-    0: (0, 1),
-    1: (0, -1),
-    2: (-1, 0),
-    3: (1, 0),
-}
+NUM_ACTIONS = 3
 
 _ACTIVATIONS: dict[str, type[nn.Module]] = {
     "tanh": nn.Tanh,
@@ -265,12 +259,13 @@ class PPO_agent(BaseAgent):
         self.grid = None
         self.rows = None
         self.cols = None
-        self.target_positions: list[tuple[int, int]] = []
+        self.target_positions: list[tuple[float, float, float, float]] = []
         if grid is not None:
             self.grid = np.load(Path(grid))
             self.rows, self.cols = self.grid.shape
             self.target_positions = [
-                (int(r), int(c)) for r, c in np.argwhere(self.grid == 3)
+                (float(c), float(r), float(c) + 1.0, float(r) + 1.0)
+                for c, r in np.argwhere(self.grid == 3)
             ]
 
         if fourier_freqs == 0:
@@ -300,12 +295,12 @@ class PPO_agent(BaseAgent):
         self.epsilon = 1.0
         self.train_mode = True
 
-        self.last_state: tuple[int, int] | None = None
+        self.last_state: tuple[float, ...] | None = None
         self.last_action: int | None = None
         self.last_log_prob: float | None = None
         self.last_value: float | None = None
 
-        self.states: list[tuple[int, int]] = []
+        self.states: list[tuple[float, ...]] = []
         self.actions: list[int] = []
         self.rewards: list[float] = []
         # dones[i] is True when the GAE chain is cut after step i (true
@@ -317,22 +312,22 @@ class PPO_agent(BaseAgent):
         self.old_log_probs: list[float] = []
         self.old_values: list[float] = []
 
-    def _encode_state(self, state: tuple[int, int]) -> np.ndarray:
+    def _encode_state(self, state: tuple[float, ...]) -> np.ndarray:
         row, col = float(state[0]), float(state[1])
         row_denom = max(1, self.rows - 1) if self.rows else max(1.0, row)
         col_denom = max(1, self.cols - 1) if self.cols else max(1.0, col)
         row_norm = row / row_denom
         col_norm = col / col_denom
-
+        features = list(state)
         if self.fourier_freqs == 0:
-            return np.array([row_norm, col_norm], dtype=np.float32)
+            return np.array(features, dtype=np.float32)
 
         if self.fourier_normalized:
             # NeRF-style: frequencies π, 2π, 4π, ..., 2^(K-1)·π on [0,1] coords.
             # Adjacent cells (step ≈ 1/(N-1)) differ by 2^k·π/(N-1) radians.
             # At k=3 on a 20-cell axis that's 8π/19 ≈ 1.3 rad — easily distinguishable.
             r, c = row_norm, col_norm
-            features: list[float] = [r, c]
+            #features: list[float] = [r, c]
             for k in range(self.fourier_freqs):
                 f = (2 ** k) * math.pi
                 features += [math.sin(f * r), math.cos(f * r),
@@ -342,7 +337,7 @@ class PPO_agent(BaseAgent):
             # (Δ=1) shift by π/2 — a quarter period, maximally distinct.
             # Lower frequencies (π/4, π/8, …) add coarser spatial context.
             r, c = row, col
-            features = []
+            features = features[2:]  # theta + lidar rays
             for k in range(self.fourier_freqs):
                 f = math.pi / (2 ** k)   # π, π/2, π/4, π/8, …
                 features += [math.sin(f * r), math.cos(f * r),
@@ -350,7 +345,7 @@ class PPO_agent(BaseAgent):
 
         return np.array(features, dtype=np.float32)
 
-    def _state_tensor(self, states: list[tuple[int, int]] | tuple[int, int]) -> torch.Tensor:
+    def _state_tensor(self, states: list[tuple[float, ...]] | tuple[float, ...]) -> torch.Tensor:
         if isinstance(states, tuple):
             encoded = self._encode_state(states)[None, :]
         else:
@@ -369,7 +364,7 @@ class PPO_agent(BaseAgent):
             return values
         return self.critic(state_tensor)
 
-    def _distribution(self, states: list[tuple[int, int]] | tuple[int, int]) -> Categorical:
+    def _distribution(self, states: list[tuple[float, ...]] | tuple[float, ...]) -> Categorical:
         state_tensor = self._state_tensor(states)
         logits = self._actor_logits(state_tensor)
         if not torch.isfinite(logits).all():
@@ -379,30 +374,34 @@ class PPO_agent(BaseAgent):
             )
         return Categorical(logits=logits)
 
-    def _value(self, state: tuple[int, int]) -> float:
+    def _value(self, state: tuple[float, ...]) -> float:
         with torch.no_grad():
             value = self._critic_values(self._state_tensor(state)).squeeze(-1)
         return float(value.item())
 
     def _is_terminal_transition(
         self,
-        next_state: tuple[int, int],
+        next_state: tuple[float, ...],
         reward: float,
     ) -> bool:
-        if next_state in self.target_positions:
-            return True
+        if self.target_positions:
+            x, y = float(next_state[0]), float(next_state[1])
+            for x_min, y_min, x_max, y_max in self.target_positions:
+                if x_min <= x <= x_max and y_min <= y <= y_max:
+                    return True
 
         # Existing reward functions only use positive rewards for target cells.
         return reward > 0
 
-    def new_episode(self, state: tuple[int, int] | None = None):
+    def new_episode(self, state: tuple[float, ...] | None = None):
         self.last_state = None
         self.last_action = None
         self.last_log_prob = None
         self.last_value = None
 
-    def take_action(self, state: tuple[int, int]) -> int:
+    def take_action(self, state: tuple[float, ...]) -> int:
         with torch.no_grad():
+            state = tuple(state)
             dist = self._distribution(state)
             if self.train_mode and self.epsilon != 0.0:
                 action_tensor = dist.sample()
@@ -419,10 +418,12 @@ class PPO_agent(BaseAgent):
         self.last_value = float(value.item())
         return action
 
-    def update(self, state: tuple[int, int], reward: float, action: int):
+    def update(self, state: tuple[float, ...], reward: float, action: int):
         if self.last_state is None or self.last_action is None:
             return
 
+        
+        
         # Terminal detection uses the raw reward; scaling happens afterwards.
         done = self._is_terminal_transition(state, reward)
 
@@ -451,14 +452,14 @@ class PPO_agent(BaseAgent):
                 self._mark_boundary(state)
             self._flush()
 
-    def _mark_boundary(self, bootstrap_state: tuple[int, int]):
+    def _mark_boundary(self, bootstrap_state: tuple[float, ...]):
         """Cut the GAE chain after the last stored transition, bootstrapping
         with V(bootstrap_state). No-op if the chain is already cut."""
         if self.dones and not self.dones[-1]:
             self.dones[-1] = True
             self.next_values[-1] = self._value(bootstrap_state)
 
-    def finish_rollout(self, bootstrap_state: tuple[int, int] | None = None):
+    def finish_rollout(self, bootstrap_state: tuple[float, ...] | None = None):
         """Mark an episode boundary and flush the buffer when appropriate.
 
         With `bootstrap_state` (episode truncated by a step limit): record the
@@ -530,7 +531,7 @@ class PPO_agent(BaseAgent):
 
     def _optimize(
         self,
-        states: list[tuple[int, int]],
+        states: list[tuple[float, ...]],
         actions: torch.Tensor,
         old_log_probs: torch.Tensor,
         advantages: torch.Tensor,
@@ -614,7 +615,7 @@ class PPO_agent(BaseAgent):
             self.actor.train(enabled)
             self.critic.train(enabled)
 
-    def policy(self, state: tuple[int, int]) -> np.ndarray:
+    def policy(self, state: tuple[float, ...]) -> np.ndarray:
         """Return the actor network's action probabilities for `state`."""
         with torch.no_grad():
             dist = self._distribution(state)

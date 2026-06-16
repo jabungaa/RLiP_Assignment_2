@@ -145,6 +145,8 @@ class EnvironmentContinuous:
         
         grid = GridContinuous.from_file(self.grid_fp)
         self.cells = grid.cells
+        for c, r in np.argwhere(self.cells == 4):
+            self.cells[c, r] = 0  # treat boundary cells as obstacles
         self.n_cols, self.n_rows = self.cells.shape
 
         segments = grid.to_segments()
@@ -166,9 +168,12 @@ class EnvironmentContinuous:
 
     def _validate_start_cell(self, cell: tuple[int, int]):
         c, r = cell
+        print(f"Validating start cell {cell}...")
         if not (0 <= c < self.n_cols and 0 <= r < self.n_rows):
             raise ValueError(f"Start cell {cell} is out of bounds "
                              f"({self.n_cols}x{self.n_rows}).")
+        print(self.cells)
+        print(f"Cell value: {self.cells[c, r]}")
         if self.cells[c, r] != 0:
             names = {0: "empty", 1: "boundary", 2: "obstacle", 3: "target"}
             raise ValueError(
@@ -352,7 +357,7 @@ class EnvironmentContinuous:
     
     
     @staticmethod
-    def _default_reward_function(self, collided: bool, target_reached: bool,
+    def _default_reward_function(collided: bool, target_reached: bool,
                                  moved: bool) -> float:
         """Default reward: reach target (+10), bump wall (-5), else step (-1)."""
         if target_reached:
@@ -363,7 +368,7 @@ class EnvironmentContinuous:
     
     
     @staticmethod
-    def _high_reward_function(self, collided: bool, target_reached: bool,
+    def _high_reward_function(collided: bool, target_reached: bool,
                                  moved: bool) -> float:
         """High reward function: reach target (+10000), bump wall (-5), else step (-1)."""
         if target_reached:
