@@ -274,11 +274,11 @@ class PPO_agent(BaseAgent):
             ]
 
         if fourier_freqs == 0:
-            self.input_dim = 2                          # raw (row_norm, col_norm)
+            self.input_dim = 21                         # raw (row_norm, col_norm)
         elif fourier_normalized:
-            self.input_dim = 2 + 4 * fourier_freqs     # raw coords + sin/cos per freq
+            self.input_dim = 21 + 4 * fourier_freqs     # raw coords + sin/cos per freq
         else:
-            self.input_dim = 4 * fourier_freqs          # sin/cos only (no raw integers)
+            self.input_dim = 19 + 4 * fourier_freqs          # sin/cos only (no raw integers)
         if self.network_mode == "shared":
             self.model = SharedActorCritic(
                 self.input_dim,

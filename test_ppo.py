@@ -39,7 +39,7 @@ def parse_args():
     parser.add_argument("--grid", type=Path, default=Path("grid_configs/small_grid.npy"))
     parser.add_argument("--start_pos", type=str, default=None,
                         help="Start position as row,col. If omitted, first empty cell is used.")
-    parser.add_argument("--reward", choices=("default", "zero", "low", "bfs"), default="low")
+    parser.add_argument("--reward", choices=("default", "zero", "low", "high", "bfs"), default="high")
     parser.add_argument("--sigma", type=float, default=0.0)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", type=str, default="cpu",
@@ -90,10 +90,10 @@ def parse_args():
                              "of this capacity. Each update samples from the full buffer "
                              "instead of only the current rollout. IS correction is "
                              "handled by the existing clipped ratio term.")
-    parser.add_argument("--step_penalty_threshold", type=int, default=None,
-                        help="Step number within an episode after which each step incurs an extra -10 penalty.")
-    parser.add_argument("--step_penalty", type=float, default=-20.0,
-                        help="Extra penalty added per step once step_penalty_threshold is exceeded.")
+    #parser.add_argument("--step_penalty_threshold", type=int, default=None,
+    #                    help="Step number within an episode after which each step incurs an extra -10 penalty.")
+    #parser.add_argument("--step_penalty", type=float, default=-20.0,
+    #                    help="Extra penalty added per step once step_penalty_threshold is exceeded.")
     parser.add_argument("--repeat_visit_penalty", type=float, default=0.0,
                         help="Extra training penalty each time a state is revisited in the same episode.")
     parser.add_argument("--progress_interval", type=int, default=100,
@@ -827,9 +827,7 @@ def main():
     try:
         from agents.PPO import PPO_agent
         import torch
-        from world.environment import (Environment, default_reward_function,
-                                       zero_penalty_reward, low_penalty_reward,
-                                       make_bfs_distance_reward)
+        from world.environment_continuous import EnvironmentContinuous
         from world.path_visualizer import visualize_path
     except ModuleNotFoundError as exc:
         if exc.name == "torch":
@@ -844,20 +842,14 @@ def main():
             ) from exc
         raise
 
-    if args.reward == "bfs":
-        reward_fn, bfs_scale = make_bfs_distance_reward(args.grid)
-        if args.reward_scale is None:
-            args.reward_scale = bfs_scale
-        eval_gamma = 1.0
-    else:
-        reward_fn = {
-            "default": default_reward_function,
-            "zero": zero_penalty_reward,
-            "low": low_penalty_reward,
-        }[args.reward]
-        eval_gamma = 0.99 if args.reward == "zero" else 1.0
-        if args.reward_scale is None:
-            args.reward_scale = REWARD_SCALES[args.reward]
+
+    reward_fn = {
+        "default": EnvironmentContinuous._default_reward_function,
+        "high": EnvironmentContinuous._high_reward_function,
+    }[args.reward]
+    eval_gamma = 0.99 if args.reward == "zero" else 1.0
+    if args.reward_scale is None:
+        args.reward_scale = REWARD_SCALES[args.reward]
     start_pos = parse_start_pos(args.start_pos, args.grid)
     start_sampler = make_training_start_sampler(
         args.grid,
@@ -879,7 +871,6 @@ def main():
         if args.resume_checkpoint is None:
             print("Auto-resume requested, but no compatible checkpoint found.")
 
-    optimal_len = bfs_shortest_path(args.grid, start_pos)
     cuda_available = torch.cuda.is_available()
     cuda_device_count = torch.cuda.device_count()
     if args.device.startswith("cuda") and not cuda_available:
@@ -910,9 +901,8 @@ def main():
     print(f"Repeat visit penalty: {args.repeat_visit_penalty}")
     print(f"Training: episodes={args.episodes}, max_steps_per_episode={args.iters}")
     print(f"Testing: episodes={args.eval_episodes}, max_steps_per_episode={args.eval_max_steps}")
-    print(f"BFS optimal path length: {optimal_len}")
 
-    env = Environment(
+    env = EnvironmentContinuous(
         grid_fp=args.grid,
         no_gui=True,
         sigma=args.sigma,
@@ -920,8 +910,8 @@ def main():
         target_fps=-1,
         random_seed=args.seed,
         reward_fn=reward_fn,
-        step_penalty_threshold=args.step_penalty_threshold,
-        step_penalty=args.step_penalty,
+        #step_penalty_threshold=args.step_penalty_threshold,
+        #step_penalty=args.step_penalty,
     )
 
     agent = PPO_agent(
@@ -997,7 +987,7 @@ def main():
 
     eval_metrics = evaluate_ppo(
         agent=agent,
-        Environment=Environment,
+        Environment=EnvironmentContinuous,
         grid_fp=args.grid,
         reward_fn=reward_fn,
         start_pos=start_pos,
@@ -1017,7 +1007,7 @@ def main():
         probs_image_path = RESULTS_DIR / f"{stamp}_policy_probs.png"
         image_metrics = save_path_image(
             agent=agent,
-            Environment=Environment,
+            Environment=EnvironmentContinuous,
             visualize_path=visualize_path,
             grid_fp=args.grid,
             reward_fn=reward_fn,
@@ -1064,7 +1054,6 @@ def main():
         "agent": "PPO_agent",
         "grid": str(args.grid),
         "start_pos": list(start_pos),
-        "optimal_path_len": optimal_len,
         "reward": args.reward,
         "reward_scale": float(args.reward_scale),
         "reward_clip": float(args.reward_clip),

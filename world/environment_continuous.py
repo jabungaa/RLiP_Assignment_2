@@ -349,7 +349,9 @@ class EnvironmentContinuous:
             self.render()
 
         return self._get_state(), reward, self.terminal_state, self.info
-
+    
+    
+    @staticmethod
     def _default_reward_function(self, collided: bool, target_reached: bool,
                                  moved: bool) -> float:
         """Default reward: reach target (+10), bump wall (-5), else step (-1)."""
@@ -358,6 +360,19 @@ class EnvironmentContinuous:
         if collided:
             return -5.0
         return -1.0
+    
+    
+    @staticmethod
+    def _high_reward_function(self, collided: bool, target_reached: bool,
+                                 moved: bool) -> float:
+        """High reward function: reach target (+10000), bump wall (-5), else step (-1)."""
+        if target_reached:
+            return 10000.0
+        if collided:
+            return -5.0
+        return -1.0
+    
+    
 
     # ------------------------------------------------------------------ #
     # Rendering
