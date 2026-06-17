@@ -168,12 +168,12 @@ class EnvironmentContinuous:
 
     def _validate_start_cell(self, cell: tuple[int, int]):
         c, r = cell
-        print(f"Validating start cell {cell}...")
+        # print(f"Validating start cell {cell}...")
         if not (0 <= c < self.n_cols and 0 <= r < self.n_rows):
             raise ValueError(f"Start cell {cell} is out of bounds "
                              f"({self.n_cols}x{self.n_rows}).")
-        print(self.cells)
-        print(f"Cell value: {self.cells[c, r]}")
+        # print(self.cells)
+        # print(f"Cell value: {self.cells[c, r]}")
         if self.cells[c, r] != 0:
             names = {0: "empty", 1: "boundary", 2: "obstacle", 3: "target"}
             raise ValueError(
@@ -457,10 +457,11 @@ class EnvironmentContinuous:
                        sigma: float = 0.,
                        agent_start_pos: tuple[int, int] = None,
                        random_seed: int | float | str | bytes | bytearray = 0,
-                       show_images: bool = False):
+                       show_images: bool = False,
+                       no_gui = True):
         """Evaluates a trained agent and saves stats + a trajectory image."""
         env = EnvironmentContinuous(grid_fp=grid_fp,
-                                    no_gui=False,
+                                    no_gui=no_gui,
                                     sigma=sigma,
                                     agent_start_pos=agent_start_pos,
                                     target_fps=100,
@@ -478,9 +479,23 @@ class EnvironmentContinuous:
         env.world_stats["targets_remaining"] = len(env.targets)
 
         path_image = env.trajectory_image(path)
-        file_name = datetime.now().strftime("%Y-%m-%d__%H-%M-%S")
+        
+        # Dynamically determine prefix based on the agent's class name
+        agent_class_name = type(agent).__name__.lower()
+        if "ppo" in agent_class_name:
+            prefix = "PPO"
+        elif "dqn" in agent_class_name:
+            prefix = "DQN"
+        else:
+            prefix = "Agent"
+
+        # Prepend the prefix to the timestamp string
+        timestamp = datetime.now().strftime("%Y-%m-%d__%H-%M-%S")
+        file_name = f"{prefix}_{timestamp}"
+        
         save_results(file_name, env.world_stats, path_image, show_images)
 
+        return env.world_stats, path
 
 if __name__ == "__main__":
     import sys

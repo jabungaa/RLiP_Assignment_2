@@ -1,8 +1,9 @@
 from pathlib import Path
 from typing import Any
-
+from datetime import datetime
 import numpy as np
 import torch
+from tqdm import tqdm
 
 from agents.DQN_agent import DQNAgent
 from world.environment_continuous import EnvironmentContinuous
@@ -52,7 +53,7 @@ def train_DQN(
 
     training_history = []
 
-    for episode in range(n_episodes):
+    for episode in tqdm(range(n_episodes)):
         state = env.reset()
         agent.reset_episode()
 
@@ -90,7 +91,7 @@ def train_DQN(
         }
 
         training_history.append(episode_info)
-        print(episode_info)
+        # print(episode_info)
 
     return agent, training_history 
 
@@ -122,7 +123,7 @@ def evaluate_DQN(
     total_reward = 0.0
     terminated = False
 
-    for step in range(max_steps_per_episode):
+    for step in tqdm(range(max_steps_per_episode)):
         action = agent.take_action(state)
 
         next_state, reward, terminated, info = env.step(action)
@@ -144,19 +145,19 @@ def evaluate_DQN(
 
     return episode_result
 
-agent, history = train_DQN(
-    grid= "grid_configs/A1_grid.npy",
-    n_episodes= 500,
-    max_steps_per_episode= 500,
-    sigma= 0.1,
-    epsilon_start= 0.5,
-    epsilon_end= 0,
-    no_gui= True,
-)
-
-print(evaluate_DQN(
-    agent= agent,
-    grid= "grid_configs/A1_grid.npy",
-    max_steps_per_episode= 500,
-    sigma= 0.0,
-    no_gui= False))
+# agent, history = train_DQN(
+#     grid= "grid_configs/A1_grid.npy",
+#     n_episodes= 500,
+#     max_steps_per_episode= 500,
+#     sigma= 0.1,
+#     epsilon_start= 0.5,
+#     epsilon_end= 0,
+#     no_gui= True,
+# )
+# 
+# print(evaluate_DQN(
+#     agent= agent,
+#     grid= "grid_configs/A1_grid.npy",
+#     max_steps_per_episode= 500,
+#     sigma= 0.0,
+#     no_gui= False))

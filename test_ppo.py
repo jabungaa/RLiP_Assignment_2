@@ -22,7 +22,7 @@ import numpy as np
 from PIL import Image, ImageDraw
 from tqdm import trange
 
-RESULTS_DIR = Path("results/ppo_only")
+RESULTS_DIR = Path("results")
 
 # Goal-reward magnitude of each reward function; used to auto-set --reward_scale
 # so the agent trains on rewards of magnitude ~1.
@@ -430,7 +430,7 @@ def train_ppo(agent, env, episodes: int, iters: int, start_sampler,
         "train_avg_learning_return_last_100": float(np.mean(episode_learning_returns[-100:])),
         "train_success_rate_last_100": float(np.mean(successes[-100:])),
         "train_avg_steps_last_100": float(np.mean(episode_steps[-100:])),
-        "train_successes_by_episode": successes,
+        # "train_successes_by_episode": successes,
     }
 
 
@@ -450,8 +450,8 @@ def evaluate_ppo(agent, Environment, grid_fp, reward_fn, start_pos, sigma,
 
     for ep in trange(episodes, desc="Evaluating PPO"):
         start_time = time.perf_counter()
-        #stats, _, _ = Environment.evaluate_agent(
-        Environment.evaluate_agent(
+
+        stats, _ = Environment.evaluate_agent(
             grid_fp=grid_fp,
             agent=agent,
             max_steps=max_steps,
@@ -460,11 +460,11 @@ def evaluate_ppo(agent, Environment, grid_fp, reward_fn, start_pos, sigma,
             random_seed=seed + ep,
         )
         times.append(time.perf_counter() - start_time)
-        # rewards.append(float(stats["cumulative_reward"]))
-        # steps.append(int(stats["total_steps"]))
-        # failed_moves.append(int(stats["total_failed_moves"]))
-        # agent_moves.append(int(stats["total_agent_moves"]))
-        # successes.append(1 if int(stats.get("targets_remaining", 1)) == 0 else 0)
+        rewards.append(float(stats["cumulative_reward"]))
+        steps.append(int(stats["total_steps"]))
+        failed_moves.append(int(stats["total_failed_moves"]))
+        agent_moves.append(int(stats["total_agent_moves"]))
+        successes.append(1 if int(stats.get("targets_remaining", 1)) == 0 else 0)
 
     if old_epsilon is not None:
         agent.epsilon = old_epsilon
@@ -489,15 +489,13 @@ def save_path_image(agent, Environment, visualize_path, grid_fp, reward_fn,
         agent.epsilon = 0.0
     agent.set_training(False)
 
-    stats, _elapsed, agent_path = Environment.evaluate_agent(
+    stats, agent_path = Environment.evaluate_agent(
         grid_fp=grid_fp,
         agent=agent,
         max_steps=max_steps,
         sigma=0.0,
         agent_start_pos=start_pos,
         random_seed=seed,
-        reward_fn=reward_fn,
-        gamma=gamma,
     )
 
     grid_cells = np.load(grid_fp)
@@ -574,7 +572,7 @@ def main():
         from agents.PPO import PPO_agent
         import torch
         from world.environment_continuous import EnvironmentContinuous
-        from world.path_visualizer import visualize_path
+        from world.path_visualizer import visualize_path, save_path_image
     except ModuleNotFoundError as exc:
         if exc.name == "torch":
             raise SystemExit(
