@@ -303,11 +303,11 @@ class EnvironmentContinuous:
 
     def _collect_targets(self) -> bool:
         """Removes any target the agent disc now overlaps; returns True if any."""
-        center = Point(self.x, self.y)
+        disc = Point(self.x, self.y).buffer(self.AGENT_RADIUS)
         reached = False
         remaining = []
         for poly in self.targets:
-            if poly.covers(center):
+            if poly.intersects(disc):
                 reached = True
             else:
                 remaining.append(poly)

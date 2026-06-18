@@ -7,7 +7,7 @@
 #this one works well
 #python test_ppo.py --grid grid_configs/small_grid.npy --episodes 500 --reward high --gamma 0.999 --fourier_freqs 64 --move_distance 0.2 --replay_capacity 16384 --activation relu
 #testing on larger grid
-python test_ppo.py --grid grid_configs/A1_grid.npy --episodes 500 --reward high --gamma 0.999 --fourier_freqs 64 --move_distance 0.5 --replay_capacity 16384 --activation relu
+python test_ppo.py --grid grid_configs/restaurant_small.npy --episodes 500 --reward high --gamma 0.999 --fourier_freqs 64 --move_distance 0.5 --replay_capacity 16384 --activation relu
 #python test_dqn.py --grid grid_configs/small_grid.npy --episodes 2000 --reward low --gamma 0.99 --step_penalty_threshold 50
 #python run_experiments.py --grid grid_configs/super_hard.npy --episodes 2000 --iter 200 --sigma 0 --train_gamma 0.999
 

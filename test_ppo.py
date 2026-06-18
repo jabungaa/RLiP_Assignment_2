@@ -309,7 +309,6 @@ def main():
         activation=args.activation,
         fourier_freqs=args.fourier_freqs,
         state_size=Environment.STATE_SIZE,
-        max_lidar_range=env.MAX_LIDAR_RANGE,
         seed=args.seed,
         device=args.device,
     )

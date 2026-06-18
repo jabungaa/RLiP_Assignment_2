@@ -55,7 +55,7 @@ class _ReplayBuffer:
         )
 
 
-NUM_ACTIONS = 3
+NUM_ACTIONS = 4  # 0=forward, 1=turn left, 2=turn right, 3=backward
 
 _ACTIVATIONS: dict[str, type[nn.Module]] = {
     "tanh": nn.Tanh,
@@ -130,8 +130,7 @@ class PPO_agent(BaseAgent):
         max_grad_norm: float | None = 0.5,
         activation: str = "tanh",
         fourier_freqs: int = 0,
-        state_size: int = 21,
-        max_lidar_range: float = 5.0,
+        state_size: int = 22,
         seed: int | None = None,
         device: str | torch.device | None = None,
     ):
@@ -159,9 +158,9 @@ class PPO_agent(BaseAgent):
                 reward of the active reward function, e.g. 10 for `default`
                 or 10000 for `high`.
             max_grad_norm: Optional gradient norm clipping.
-            state_size: Continuous environment state size:
-                (x, y, theta) plus lidar rays.
-            max_lidar_range: Divisor used to normalize lidar distances.
+            state_size: Continuous environment state size. The environment
+                already normalizes the state, so this is just the raw count
+                of features: 4 base (x, y, cos θ, sin θ) + N_RAYS lidar = 22.
             seed: Optional RNG seed for NumPy and PyTorch.
             device: Optional torch device, e.g. "cpu" or "cuda".
             replay_capacity: Size of the off-policy replay buffer. When > 0,
@@ -192,17 +191,14 @@ class PPO_agent(BaseAgent):
         self.max_grad_norm = max_grad_norm
         self.activation = activation
         self.fourier_freqs = fourier_freqs
-        if state_size < 3:
-            raise ValueError("state_size must include at least x, y, and theta")
-        if max_lidar_range <= 0:
-            raise ValueError("max_lidar_range must be positive")
+        if state_size < 4:
+            raise ValueError("state_size must include at least x, y, cos θ, sin θ")
         self.state_size = int(state_size)
-        self.lidar_dim = self.state_size - 3
-        self.max_lidar_range = float(max_lidar_range)
+        self.lidar_dim = self.state_size - 4
         self.device = torch.device(device or "cpu")
 
-        # raw x/y + sin/cos(theta) + lidar + Fourier(raw x/y)
-        self.input_dim = 4 + self.lidar_dim + 4 * self.fourier_freqs
+        # state is already normalized; optionally append Fourier features for x, y
+        self.input_dim = self.state_size + 4 * self.fourier_freqs
         self.actor = MLP(self.input_dim, self.hidden_sizes, NUM_ACTIONS, activation=activation).to(self.device)
         self.critic = MLP(self.input_dim, self.hidden_sizes, 1, activation=activation).to(self.device)
         self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=policy_lr)
@@ -234,28 +230,19 @@ class PPO_agent(BaseAgent):
                 f"Expected state shape ({self.state_size},), got {state_arr.shape}"
             )
 
-        x, y, theta = map(float, state_arr[:3])
-        lidar = state_arr[3:] / self.max_lidar_range
-        features: list[float] = [
-            x / 50.0,
-            y / 50.0,
-            math.sin(theta),
-            math.cos(theta),
-        ]
+        if self.fourier_freqs == 0:
+            return state_arr
 
+        # state[0]=x_norm, state[1]=y_norm — already in [0, 1]
+        x_norm, y_norm = float(state_arr[0]), float(state_arr[1])
+        fourier: list[float] = []
         for k in range(self.fourier_freqs):
-            f = math.pi / (2 ** k)
-            features += [
-                math.sin(f * x),
-                math.cos(f * x),
-                math.sin(f * y),
-                math.cos(f * y),
+            f = math.pi * (2 ** k)
+            fourier += [
+                math.sin(f * x_norm), math.cos(f * x_norm),
+                math.sin(f * y_norm), math.cos(f * y_norm),
             ]
-
-        if self.lidar_dim:
-            features.extend(float(v) for v in lidar)
-
-        return np.array(features, dtype=np.float32)
+        return np.concatenate([state_arr, np.array(fourier, dtype=np.float32)])
 
     def _state_tensor(self, states) -> torch.Tensor:
         state_arr = np.asarray(states, dtype=np.float32)
