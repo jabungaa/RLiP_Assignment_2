@@ -1,7 +1,12 @@
 numpy >= 1.24
 tqdm >= 4
-pygame >= 2.3
 flask >= 2.2
 flask-socketio >= 5.3
 pillow >= 9.4
 colorcet >=3.0
+pygame-ce >= 2.1
+shapely >= 2.0
+torch >= 2.0
+torchvision >= 0.15
+matplotlib >= 3.7
+

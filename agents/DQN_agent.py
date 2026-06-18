@@ -171,11 +171,16 @@ class DQNNetwork(nn.Module):
         self.output_dim = output_dim
 
         self.network = nn.Sequential(
-            nn.Linear(self.input_dim, 16),
+            nn.Linear(self.input_dim, 64),
+            nn.LayerNorm(64),
             nn.ReLU(),
-            nn.Linear(16, 16),
+            nn.Linear(64, 128),
+            nn.LayerNorm(128),
             nn.ReLU(),
-            nn.Linear(16, self.output_dim),
+            nn.Linear(128, 64),
+            nn.LayerNorm(64),
+            nn.ReLU(),
+            nn.Linear(64, self.output_dim),
         )
 
     def forward(self, x):

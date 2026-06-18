@@ -37,9 +37,9 @@ class EnvironmentContinuous:
     MOVE_DISTANCE = 0.2
     TURN_ANGLE = radians(15)
 
-    N_ACTIONS = 3        # 0 = forward, 1 = turn left, 2 = turn right
+    N_ACTIONS = 4        # 0 = forward, 1 = turn left, 2 = turn right, 3= move backwards
     N_RAYS = 18 # number of rays in the lidar state representation (18 rays equal a ray every 20 degrees)
-    STATE_SIZE = 3 + N_RAYS # (x, y, theta) + lidar rays
+    STATE_SIZE = 4 + N_RAYS # (x, y, theta) + lidar rays
 
     def __init__(self,
                  grid_fp: Path,
@@ -197,7 +197,7 @@ class EnvironmentContinuous:
 
     def _get_ray(self, x, y, ray_angle, walls, max_range=5.0):
         end_x = x + max_range * cos(ray_angle)
-        end_y = y + max_range * sin(ray_angle)
+        end_y = y - max_range * sin(ray_angle) #updated sin to negative because the y-axis is inverted in the GUI (y increases downwards)
         ray = LineString([(x, y), (end_x, end_y)])
 
         min_dist = max_range
@@ -223,7 +223,7 @@ class EnvironmentContinuous:
         # the entire 360 degree field is covered by 2*pi radians
         ray_angles = [self.theta + i * ((2*pi)/self.N_RAYS) for i in range(self.N_RAYS)]
         lidar_rays = [self._get_ray(self.x, self.y, ray_angle, self.walls, max_range=self.MAX_LIDAR_RANGE) for ray_angle in ray_angles]
-        return np.array([self.x, self.y, self.theta, *lidar_rays], dtype=np.float32)
+        return np.array([self.x/self.n_cols, self.y/self.n_rows, np.cos(self.theta), np.sin(self.theta), *[d/self.MAX_LIDAR_RANGE for d in lidar_rays]], dtype=np.float32) #added state normalization to [0, 1] for x, y, and lidar rays, and to [-1, 1] for cos(theta) and sin(theta) to help with training
 
     def reset(self, **kwargs) -> np.ndarray:
         """Reset the environment to an initial state.
@@ -278,6 +278,20 @@ class EnvironmentContinuous:
         self.x, self.y = nx, ny
         return True
 
+    def _attempt_backward(self) -> bool:
+        """Tries to move the agent backward; returns True if it moved.
+
+        The move is blocked (collision) if the agent would come within
+        ``AGENT_RADIUS`` of any wall.
+        """
+        nx = self.x - self.MOVE_DISTANCE * cos(self.theta)
+        ny = self.y + self.MOVE_DISTANCE * sin(self.theta)
+        motion = LineString([(self.x, self.y), (nx, ny)])
+        if self.walls.distance(motion) < self.AGENT_RADIUS:
+            return False  # collision: stay in place
+        self.x, self.y = nx, ny
+        return True
+
     def _collect_targets(self) -> bool:
         """Removes any target the agent disc now overlaps; returns True if any."""
         center = Point(self.x, self.y)
@@ -296,13 +310,13 @@ class EnvironmentContinuous:
     def step(self, action: int) -> tuple[np.ndarray, float, bool, dict]:
         """Advances the environment by one action.
 
-        Actions: 0 = forward, 1 = turn left, 2 = turn right.
+        Actions: 0 = forward, 1 = turn left, 2 = turn right, 3 = backward.
 
         Returns:
             (state, reward, terminal, info)
         """
-        if action not in (0, 1, 2):
-            raise ValueError(f"Invalid action {action}; expected 0, 1 or 2.")
+        if action not in (0, 1, 2, 3):
+            raise ValueError(f"Invalid action {action}; expected 0, 1, 2 or 3.")
 
         self.info = self._reset_info()
         self.world_stats["total_steps"] += 1
@@ -311,7 +325,7 @@ class EnvironmentContinuous:
 
         # Environment stochasticity.
         if random.random() <= self.sigma:
-            actual_action = random.randint(0, 2)
+            actual_action = random.randint(0, 3)
         else:
             actual_action = action
         self.info["actual_action"] = actual_action
@@ -322,6 +336,16 @@ class EnvironmentContinuous:
 
         if actual_action == 0:                       # forward
             moved = self._attempt_forward()
+            if moved:
+                self.world_stats["total_agent_moves"] += 1
+                target_reached = self._collect_targets()
+                if target_reached:
+                    self.world_stats["total_targets_reached"] += 1
+            else:
+                collided = True
+                self.world_stats["total_failed_moves"] += 1
+        if actual_action == 3:                       # backward
+            moved = self._attempt_backward()
             if moved:
                 self.world_stats["total_agent_moves"] += 1
                 target_reached = self._collect_targets()
@@ -359,14 +383,17 @@ class EnvironmentContinuous:
     @staticmethod
     def _default_reward_function(collided: bool, target_reached: bool,
                                  moved: bool) -> float:
-        """Default reward: reach target (+10), bump wall (-5), else step (-1)."""
+        """Default reward: reach target (+1), bump wall (-0.25), else step (-0.001)."""
         if target_reached:
-            return 10.0
+            return 1
         if collided:
-            return -5.0
-        return -1.0
-    
-    
+            return -0.25
+        if moved:
+            return -0.001
+        else:
+            return -0.01
+
+
     @staticmethod
     def _high_reward_function(collided: bool, target_reached: bool,
                                  moved: bool) -> float:
@@ -410,7 +437,7 @@ class EnvironmentContinuous:
         ray_lengths = self._get_state()[3:] # the first 3 elements of the state are (x, y, theta), the rest are lidar rays
         for ray_angle, ray_length in zip(ray_angles, ray_lengths):
             end_x = self.x + ray_length * cos(ray_angle)
-            end_y = self.y + ray_length * sin(ray_angle)
+            end_y = self.y - ray_length * sin(ray_angle) #updated sin to negative because the y-axis is inverted in the GUI (y increases downwards)
             ax.plot([self.x, end_x], [self.y, end_y], color="red", linewidth=1.0, zorder=1)
 
 
