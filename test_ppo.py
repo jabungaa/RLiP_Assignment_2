@@ -20,6 +20,8 @@ from pathlib import Path
 import numpy as np
 from tqdm import trange
 
+RESULTS_DIR = Path("results")
+
 # Goal-reward magnitude of each reward function; used to auto-set --reward_scale
 # so the agent trains on rewards of magnitude ~1.
 REWARD_SCALES = {

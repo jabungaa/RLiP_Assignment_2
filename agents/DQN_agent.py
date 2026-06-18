@@ -123,10 +123,10 @@ class DQNAgent(BaseAgent):
 
         states, actions, rewards, next_states, dones = zip(*batch)
 
-        states = torch.tensor(states, dtype=torch.float32, device=self.device)
+        states = torch.tensor(np.array(states), dtype=torch.float32, device=self.device)
         actions = torch.tensor(actions, dtype=torch.long, device=self.device).unsqueeze(1)
         rewards = torch.tensor(rewards, dtype=torch.float32, device=self.device)
-        next_states = torch.tensor(next_states, dtype=torch.float32, device=self.device)
+        next_states = torch.tensor(np.array(next_states), dtype=torch.float32, device=self.device)
         dones = torch.tensor(dones, dtype=torch.float32, device=self.device)
 
         q_values = self.policy_network(states)
@@ -158,6 +158,10 @@ class DQNAgent(BaseAgent):
 
         self.epsilon = self.epsilon_start + fraction * (self.epsilon_end - self.epsilon_start)
 
+    def reset_episode(self):
+        self.previous_state = None
+        self.previous_action = None
+
 class DQNNetwork(nn.Module):
     
     def __init__(self, input_dim, output_dim):
@@ -167,11 +171,16 @@ class DQNNetwork(nn.Module):
         self.output_dim = output_dim
 
         self.network = nn.Sequential(
-            nn.Linear(self.input_dim, 16),
+            nn.Linear(self.input_dim, 64),
+            nn.LayerNorm(64),
             nn.ReLU(),
-            nn.Linear(16, 16),
+            nn.Linear(64, 128),
+            nn.LayerNorm(128),
             nn.ReLU(),
-            nn.Linear(16, self.output_dim),
+            nn.Linear(128, 64),
+            nn.LayerNorm(64),
+            nn.ReLU(),
+            nn.Linear(64, self.output_dim),
         )
 
     def forward(self, x):

@@ -21,13 +21,13 @@ def save_results(file_name: str, world_stats: dict, path_image: Image.Image, sho
         out_dir.mkdir(parents=True, exist_ok=True)
 
     # Print evaluation results
-    print("Evaluation complete. Results:")
+    # print("Evaluation complete. Results:")
     # Text file
-    out_fp = out_dir / f"{file_name}.txt"
-    with open(out_fp, "w") as f:
-        for key, value in world_stats.items():
-            f.write(f"{key}: {value}\n")
-            print(f"{key}: {value}")
+    # out_fp = out_dir / f"{file_name}.txt"
+    # with open(out_fp, "w") as f:
+    #     for key, value in world_stats.items():
+    #         f.write(f"{key}: {value}\n")
+    #         print(f"{key}: {value}")
 
     # Image file
     out_fp = out_dir / f"{file_name}.png"

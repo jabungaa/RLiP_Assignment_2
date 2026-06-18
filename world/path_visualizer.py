@@ -9,6 +9,7 @@ from colorcet import bmw, glasbey_hv
 from PIL import Image
 from PIL import ImageDraw
 import numpy as np
+from pathlib import Path
 
 from world import GUI
 
@@ -199,3 +200,58 @@ def visualize_path(grid_cells: np.ndarray,
                             float_rgb_to_int(glasbey_hv[0]), image_size)
 
     return Image.alpha_composite(img, overlay)
+
+def save_path_image(
+    agent,
+    Environment,
+    grid_fp: Path,
+    reward_fn,
+    start_pos: tuple[int, int],
+    seed: int,
+    max_steps: int,
+    gamma: float,
+    out_path: Path,
+    visualize_path=None, # Kept for backward compatibility, disregard for now
+) -> dict:
+    
+    # Handle epsilon-greedy agents safely (like DQN)
+    old_epsilon = getattr(agent, "epsilon", None)
+    if old_epsilon is not None:
+        agent.epsilon = 0.0
+        
+    # Handle training/eval state switching safely (like PPO)
+    if hasattr(agent, "set_training"):
+        agent.set_training(False)
+
+    # Generate the deterministic evaluation trajectory path
+    stats, agent_path = Environment.evaluate_agent(
+        grid_fp=grid_fp,
+        agent=agent,
+        max_steps=max_steps,
+        sigma=0.0,
+        agent_start_pos=start_pos,
+        random_seed=seed,
+    )
+
+    # Render and save the image
+    grid_cells = np.load(grid_fp)
+    
+    # Use the locally available visualize_path function if none was passed
+    viz_fn = visualize_path if visualize_path is not None else globals().get("visualize_path")
+    if viz_fn is None:
+        raise ImportError("visualize_path function not found in scope.")
+        
+    path_image = viz_fn(grid_cells, agent_path)
+    path_image.save(out_path)
+
+    # Restore agent state
+    if old_epsilon is not None:
+        agent.epsilon = old_epsilon
+
+    # return {
+    #     "image_path": str(out_path),
+    #     "image_total_steps": int(stats["total_steps"]),
+    #     "image_total_failed_moves": int(stats["total_failed_moves"]),
+    #     "image_total_agent_moves": int(stats["total_agent_moves"]),
+    #     "image_reached_goal": int(stats.get("targets_remaining", 1)) == 0,
+    # }
