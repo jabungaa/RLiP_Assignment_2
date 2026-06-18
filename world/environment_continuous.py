@@ -48,14 +48,17 @@ class EnvironmentContinuous:
                  agent_start_pos: tuple[int, int] = None,
                  reward_fn: callable = None,
                  target_fps: int = 30,
-                 random_seed: int | float | str | bytes | bytearray | None = 0):
+                 random_seed: int | float | str | bytes | bytearray | None = 0,
+                 agent_radius: float = 0.2,
+                 move_distance: float = 0.2,
+                 turn_angle: float = radians(15)):
         """Creates the continuous Grid Environment for the Reinforcement Learning robot
         from the provided file.
 
         This environment follows the general principles of reinforcment
         learning. It can be thought of as a function E : action -> observation
         where E is the environment represented as a function.
-        
+
         Args:
             grid_fp: Path to the grid file to use.
             no_gui: True if no GUI is desired.
@@ -64,16 +67,22 @@ class EnvironmentContinuous:
                 calculated as 1-sigma.
             agent_start_pos: Tuple where each agent should start.
                 If None is provided, then a random start position is used.
-            reward_fn: Custom reward function to use. 
+            reward_fn: Custom reward function to use.
             target_fps: How fast the simulation should run if it is being shown
                 in a GUI. If in no_gui mode, then the simulation will run as fast as
                 possible. We may set a low FPS so we can actually see what's
                 happening. Set to 0 or less to unlock FPS.
             random_seed: The random seed to use for this environment. If None
                 is provided, then the seed will be set to 0.
+            agent_radius: Radius of the agent disc in metres. Used for
+                collision detection and rendering. Default 0.2.
+            move_distance: Distance moved per forward action in metres. Default 0.2.
+            turn_angle: Angle rotated per turn action in radians. Default pi/12 (15°).
         """
         random.seed(random_seed) # maybe we would like to keep this fixed instead for reproducibility in the future?
-
+        self.AGENT_RADIUS = agent_radius
+        self.MOVE_DISTANCE = move_distance
+        self.TURN_ANGLE = turn_angle
         # Initialize Grid
         if not grid_fp.exists():
             raise FileNotFoundError(f"Grid {grid_fp} does not exist.")
@@ -168,12 +177,12 @@ class EnvironmentContinuous:
 
     def _validate_start_cell(self, cell: tuple[int, int]):
         c, r = cell
-        print(f"Validating start cell {cell}...")
+        #print(f"Validating start cell {cell}...")
         if not (0 <= c < self.n_cols and 0 <= r < self.n_rows):
             raise ValueError(f"Start cell {cell} is out of bounds "
                              f"({self.n_cols}x{self.n_rows}).")
-        print(self.cells)
-        print(f"Cell value: {self.cells[c, r]}")
+        #print(self.cells)
+        #print(f"Cell value: {self.cells[c, r]}")
         if self.cells[c, r] != 0:
             names = {0: "empty", 1: "boundary", 2: "obstacle", 3: "target"}
             raise ValueError(
@@ -372,7 +381,7 @@ class EnvironmentContinuous:
                                  moved: bool) -> float:
         """High reward function: reach target (+10000), bump wall (-5), else step (-1)."""
         if target_reached:
-            return 10000.0
+            return 10000000.0
         if collided:
             return -5.0
         return -1.0

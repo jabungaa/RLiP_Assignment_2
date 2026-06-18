@@ -1,4 +1,4 @@
-"""PyTorch PPO agent for the continuous grid-world environment.
+"""PyTorch PPO agent for the grid-world environment.
 
 The agent uses separate actor and critic multilayer perceptrons:
 
@@ -11,7 +11,6 @@ updates with PyTorch autograd.
 
 from __future__ import annotations
 
-from collections import deque
 from pathlib import Path
 
 import math
@@ -23,39 +22,13 @@ from torch.distributions import Categorical
 
 from agents import BaseAgent
 
-
-class _ReplayBuffer:
-    """Circular buffer storing pre-processed PPO transitions for off-policy reuse."""
-
-    def __init__(self, capacity: int):
-        self._states:        deque[np.ndarray] = deque(maxlen=capacity)
-        self._actions:       deque[int]        = deque(maxlen=capacity)
-        self._old_log_probs: deque[float]      = deque(maxlen=capacity)
-        self._advantages:    deque[float]      = deque(maxlen=capacity)
-        self._returns:       deque[float]      = deque(maxlen=capacity)
-
-    def add(self, states, actions, old_log_probs, advantages, returns):
-        for s, a, lp, adv, ret in zip(states, actions, old_log_probs, advantages, returns):
-            self._states.append(s)
-            self._actions.append(int(a))
-            self._old_log_probs.append(float(lp))
-            self._advantages.append(float(adv))
-            self._returns.append(float(ret))
-
-    def __len__(self):
-        return len(self._states)
-
-    def as_tensors(self, device):
-        return (
-            list(self._states),
-            torch.as_tensor(list(self._actions),       dtype=torch.long,    device=device),
-            torch.as_tensor(list(self._old_log_probs), dtype=torch.float32, device=device),
-            torch.as_tensor(list(self._advantages),    dtype=torch.float32, device=device),
-            torch.as_tensor(list(self._returns),       dtype=torch.float32, device=device),
-        )
-
-
-NUM_ACTIONS = 3
+NUM_ACTIONS = 4
+ACTION_TO_DELTA = {
+    0: (0, 1),
+    1: (0, -1),
+    2: (-1, 0),
+    3: (1, 0),
+}
 
 _ACTIVATIONS: dict[str, type[nn.Module]] = {
     "tanh": nn.Tanh,
@@ -121,24 +94,22 @@ class PPO_agent(BaseAgent):
         entropy_coef: float = 0.01,
         value_coef: float = 0.5,
         update_epochs: int = 4,
-        minibatch_size: int = 64,
         rollout_steps: int = 128,
-        replay_capacity: int = 0,
         hidden_sizes: tuple[int, ...] | list[int] = (64, 128),
         advantage_norm: bool = True,
         reward_scale: float = 1.0,
         max_grad_norm: float | None = 0.5,
         activation: str = "tanh",
         fourier_freqs: int = 0,
-        state_size: int = 21,
-        max_lidar_range: float = 5.0,
+        fourier_normalized: bool = True,
         seed: int | None = None,
         device: str | torch.device | None = None,
     ):
         """Create a PyTorch PPO actor-critic agent.
 
         Args:
-            grid: Unused compatibility argument for old runners.
+            grid: Optional `.npy` grid file. Enables invalid-action masking.
+                The policy observation does not include target position.
             gamma: Discount factor.
             gae_lambda: Lambda for generalized advantage estimation.
             clip_epsilon: PPO policy-ratio clipping range.
@@ -147,27 +118,18 @@ class PPO_agent(BaseAgent):
             entropy_coef: Entropy bonus weight.
             value_coef: Value loss multiplier.
             update_epochs: Optimization passes over each rollout.
-            minibatch_size: Number of transitions per gradient step. The
-                rollout is split into chunks of this size each epoch.
             rollout_steps: Transitions collected (across episodes) before a
                 PPO update. Episode boundaries inside the buffer are handled
                 with GAE chain cuts and time-limit bootstrapping.
             hidden_sizes: Hidden layer widths for actor and critic MLPs.
             advantage_norm: Normalize advantages inside each rollout.
-            reward_scale: All rewards are divided by this before storage, so
-                the critic sees targets of magnitude ~1. Set it to the goal
-                reward of the active reward function, e.g. 10 for `default`
-                or 10000 for `high`.
+            reward_scale: All rewards are divided by this before clipping and
+                storage, so the critic sees targets of magnitude ~1. Set it to
+                the goal reward of the active reward function (e.g. 1e8 for
+                `zero_penalty_reward`, 1e4 for `low_penalty_reward`).
             max_grad_norm: Optional gradient norm clipping.
-            state_size: Continuous environment state size:
-                (x, y, theta) plus lidar rays.
-            max_lidar_range: Divisor used to normalize lidar distances.
             seed: Optional RNG seed for NumPy and PyTorch.
             device: Optional torch device, e.g. "cpu" or "cuda".
-            replay_capacity: Size of the off-policy replay buffer. When > 0,
-                each rollout is pushed into the buffer and training uses all
-                stored transitions, reusing older data across rollouts.
-                0 (default) keeps the original on-policy PPO behaviour.
         """
         super().__init__()
 
@@ -181,9 +143,7 @@ class PPO_agent(BaseAgent):
         self.entropy_coef = entropy_coef
         self.value_coef = value_coef
         self.update_epochs = update_epochs
-        self.minibatch_size = minibatch_size
         self.rollout_steps = rollout_steps
-        self._replay = _ReplayBuffer(replay_capacity) if replay_capacity > 0 else None
         self.hidden_sizes = tuple(hidden_sizes)
         self.advantage_norm = advantage_norm
         if reward_scale <= 0:
@@ -192,17 +152,27 @@ class PPO_agent(BaseAgent):
         self.max_grad_norm = max_grad_norm
         self.activation = activation
         self.fourier_freqs = fourier_freqs
-        if state_size < 3:
-            raise ValueError("state_size must include at least x, y, and theta")
-        if max_lidar_range <= 0:
-            raise ValueError("max_lidar_range must be positive")
-        self.state_size = int(state_size)
-        self.lidar_dim = self.state_size - 3
-        self.max_lidar_range = float(max_lidar_range)
+        self.fourier_normalized = fourier_normalized
         self.device = torch.device(device or "cpu")
+        self.rng = np.random.default_rng(seed)
 
-        # raw x/y + sin/cos(theta) + lidar + Fourier(raw x/y)
-        self.input_dim = 4 + self.lidar_dim + 4 * self.fourier_freqs
+        self.grid = None
+        self.rows = None
+        self.cols = None
+        self.target_positions: list[tuple[int, int]] = []
+        if grid is not None:
+            self.grid = np.load(Path(grid))
+            self.rows, self.cols = self.grid.shape
+            self.target_positions = [
+                (int(r), int(c)) for r, c in np.argwhere(self.grid == 3)
+            ]
+
+        if fourier_freqs == 0:
+            self.input_dim = 2                          # raw (row_norm, col_norm)
+        elif fourier_normalized:
+            self.input_dim = 2 + 4 * fourier_freqs     # raw coords + sin/cos per freq
+        else:
+            self.input_dim = 4 * fourier_freqs          # sin/cos only (no raw integers)
         self.actor = MLP(self.input_dim, self.hidden_sizes, NUM_ACTIONS, activation=activation).to(self.device)
         self.critic = MLP(self.input_dim, self.hidden_sizes, 1, activation=activation).to(self.device)
         self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=policy_lr)
@@ -210,12 +180,12 @@ class PPO_agent(BaseAgent):
 
         self.train_mode = True
 
-        self.last_state: np.ndarray | None = None
+        self.last_state: tuple[int, int] | None = None
         self.last_action: int | None = None
         self.last_log_prob: float | None = None
         self.last_value: float | None = None
 
-        self.states: list[np.ndarray] = []
+        self.states: list[tuple[int, int]] = []
         self.actions: list[int] = []
         self.rewards: list[float] = []
         # dones[i] is True when the GAE chain is cut after step i (true
@@ -227,42 +197,44 @@ class PPO_agent(BaseAgent):
         self.old_log_probs: list[float] = []
         self.old_values: list[float] = []
 
-    def _encode_state(self, state) -> np.ndarray:
-        state_arr = np.asarray(state, dtype=np.float32)
-        if state_arr.ndim != 1 or state_arr.shape[0] != self.state_size:
-            raise ValueError(
-                f"Expected state shape ({self.state_size},), got {state_arr.shape}"
-            )
+    def _encode_state(self, state: tuple[int, int]) -> np.ndarray:
+        row, col = float(state[0]), float(state[1])
+        row_denom = max(1, self.rows - 1) if self.rows else max(1.0, row)
+        col_denom = max(1, self.cols - 1) if self.cols else max(1.0, col)
+        row_norm = row / row_denom
+        col_norm = col / col_denom
 
-        x, y, theta = map(float, state_arr[:3])
-        lidar = state_arr[3:] / self.max_lidar_range
-        features: list[float] = [
-            x / 50.0,
-            y / 50.0,
-            math.sin(theta),
-            math.cos(theta),
-        ]
+        if self.fourier_freqs == 0:
+            return np.array([row_norm, col_norm], dtype=np.float32)
 
-        for k in range(self.fourier_freqs):
-            f = math.pi / (2 ** k)
-            features += [
-                math.sin(f * x),
-                math.cos(f * x),
-                math.sin(f * y),
-                math.cos(f * y),
-            ]
-
-        if self.lidar_dim:
-            features.extend(float(v) for v in lidar)
+        if self.fourier_normalized:
+            # NeRF-style: frequencies π, 2π, 4π, ..., 2^(K-1)·π on [0,1] coords.
+            # Adjacent cells (step ≈ 1/(N-1)) differ by 2^k·π/(N-1) radians.
+            # At k=3 on a 20-cell axis that's 8π/19 ≈ 1.3 rad — easily distinguishable.
+            r, c = row_norm, col_norm
+            features: list[float] = [r, c]
+            for k in range(self.fourier_freqs):
+                f = (2 ** k) * math.pi
+                features += [math.sin(f * r), math.cos(f * r),
+                             math.sin(f * c), math.cos(f * c)]
+        else:
+            # Raw-integer style: base frequency π/2 so adjacent integer steps
+            # (Δ=1) shift by π/2 — a quarter period, maximally distinct.
+            # Lower frequencies (π/4, π/8, …) add coarser spatial context.
+            r, c = row, col
+            features = []
+            for k in range(self.fourier_freqs):
+                f = math.pi / (2 ** k)   # π, π/2, π/4, π/8, …
+                features += [math.sin(f * r), math.cos(f * r),
+                             math.sin(f * c), math.cos(f * c)]
 
         return np.array(features, dtype=np.float32)
 
-    def _state_tensor(self, states) -> torch.Tensor:
-        state_arr = np.asarray(states, dtype=np.float32)
-        if state_arr.ndim == 1:
-            encoded = self._encode_state(state_arr)[None, :]
+    def _state_tensor(self, states: list[tuple[int, int]] | tuple[int, int]) -> torch.Tensor:
+        if isinstance(states, tuple):
+            encoded = self._encode_state(states)[None, :]
         else:
-            encoded = np.stack([self._encode_state(state) for state in state_arr])
+            encoded = np.stack([self._encode_state(state) for state in states])
         return torch.as_tensor(encoded, dtype=torch.float32, device=self.device)
 
     def _actor_logits(self, state_tensor: torch.Tensor) -> torch.Tensor:
@@ -271,7 +243,7 @@ class PPO_agent(BaseAgent):
     def _critic_values(self, state_tensor: torch.Tensor) -> torch.Tensor:
         return self.critic(state_tensor)
 
-    def _distribution(self, states) -> Categorical:
+    def _distribution(self, states: list[tuple[int, int]] | tuple[int, int]) -> Categorical:
         state_tensor = self._state_tensor(states)
         logits = self._actor_logits(state_tensor)
         if not torch.isfinite(logits).all():
@@ -281,18 +253,29 @@ class PPO_agent(BaseAgent):
             )
         return Categorical(logits=logits)
 
-    def _value(self, state) -> float:
+    def _value(self, state: tuple[int, int]) -> float:
         with torch.no_grad():
             value = self._critic_values(self._state_tensor(state)).squeeze(-1)
         return float(value.item())
 
-    def new_episode(self, state=None):
+    def _is_terminal_transition(
+        self,
+        next_state: tuple[int, int],
+        reward: float,
+    ) -> bool:
+        if next_state in self.target_positions:
+            return True
+
+        # Existing reward functions only use positive rewards for target cells.
+        return reward > 0
+
+    def new_episode(self, state: tuple[int, int] | None = None):
         self.last_state = None
         self.last_action = None
         self.last_log_prob = None
         self.last_value = None
 
-    def take_action(self, state) -> int:
+    def take_action(self, state: tuple[int, int]) -> int:
         with torch.no_grad():
             dist = self._distribution(state)
             if self.train_mode:
@@ -310,9 +293,12 @@ class PPO_agent(BaseAgent):
         self.last_value = float(value.item())
         return action
 
-    def update(self, state, reward: float, action: int, done: bool = False):
+    def update(self, state: tuple[int, int], reward: float, action: int):
         if self.last_state is None or self.last_action is None:
             return
+
+        # Terminal detection uses the raw reward; scaling happens afterwards.
+        done = self._is_terminal_transition(state, reward)
 
         scaled_reward = float(reward) / self.reward_scale
         self.states.append(self.last_state)
@@ -337,14 +323,14 @@ class PPO_agent(BaseAgent):
                 self._mark_boundary(state)
             self._flush()
 
-    def _mark_boundary(self, bootstrap_state):
+    def _mark_boundary(self, bootstrap_state: tuple[int, int]):
         """Cut the GAE chain after the last stored transition, bootstrapping
         with V(bootstrap_state). No-op if the chain is already cut."""
         if self.dones and not self.dones[-1]:
             self.dones[-1] = True
             self.next_values[-1] = self._value(bootstrap_state)
 
-    def finish_rollout(self, bootstrap_state=None):
+    def finish_rollout(self, bootstrap_state: tuple[int, int] | None = None):
         """Mark an episode boundary and flush the buffer when appropriate.
 
         With `bootstrap_state` (episode truncated by a step limit): mark the
@@ -402,66 +388,56 @@ class PPO_agent(BaseAgent):
         adv_tensor = torch.as_tensor(advantages, dtype=torch.float32, device=self.device)
         ret_tensor = torch.as_tensor(returns, dtype=torch.float32, device=self.device)
 
-        if self._replay is not None:
-            self._replay.add(
-                states,
-                actions.tolist(),
-                old_log_probs.tolist(),
-                advantages.tolist(),
-                ret_tensor.tolist(),
-            )
-            rb_states, rb_actions, rb_lp, rb_adv, rb_ret = self._replay.as_tensors(self.device)
-            self._optimize(rb_states, rb_actions, rb_lp, rb_adv, rb_ret)
-        else:
-            self._optimize(states, actions, old_log_probs, adv_tensor, ret_tensor)
-
+        self._optimize(
+            states=states,
+            actions=actions,
+            old_log_probs=old_log_probs,
+            advantages=adv_tensor,
+            returns=ret_tensor,
+        )
         self._clear_rollout()
 
     def _optimize(
         self,
-        states: list[np.ndarray],
+        states: list[tuple[int, int]],
         actions: torch.Tensor,
         old_log_probs: torch.Tensor,
         advantages: torch.Tensor,
         returns: torch.Tensor,
     ):
         n = len(states)
-        mb = min(self.minibatch_size, n)
 
         for _ in range(self.update_epochs):
             indices = torch.randperm(n, device=self.device)
+            batch_states = [states[int(i.item())] for i in indices]
 
-            for start in range(0, n, mb):
-                idx = indices[start: start + mb]
-                mb_states = [states[int(i.item())] for i in idx]
+            dist = self._distribution(batch_states)
+            new_log_probs = dist.log_prob(actions[indices])
+            entropy = dist.entropy().mean()
+            values = self._critic_values(self._state_tensor(batch_states)).squeeze(-1)
 
-                dist = self._distribution(mb_states)
-                new_log_probs = dist.log_prob(actions[idx])
-                entropy = dist.entropy().mean()
-                values = self._critic_values(self._state_tensor(mb_states)).squeeze(-1)
+            ratios = torch.exp(new_log_probs - old_log_probs[indices])
+            unclipped = ratios * advantages[indices]
+            clipped = torch.clamp(
+                ratios,
+                1.0 - self.clip_epsilon,
+                1.0 + self.clip_epsilon,
+            ) * advantages[indices]
 
-                ratios = torch.exp(new_log_probs - old_log_probs[idx])
-                unclipped = ratios * advantages[idx]
-                clipped = torch.clamp(
-                    ratios,
-                    1.0 - self.clip_epsilon,
-                    1.0 + self.clip_epsilon,
-                ) * advantages[idx]
+            actor_loss = -torch.min(unclipped, clipped).mean()
+            critic_loss = nn.functional.mse_loss(values, returns[indices])
+            loss = actor_loss + self.value_coef * critic_loss - self.entropy_coef * entropy
 
-                actor_loss = -torch.min(unclipped, clipped).mean()
-                critic_loss = nn.functional.mse_loss(values, returns[idx])
-                loss = actor_loss + self.value_coef * critic_loss - self.entropy_coef * entropy
+            self.actor_optimizer.zero_grad()
+            self.critic_optimizer.zero_grad()
+            loss.backward()
 
-                self.actor_optimizer.zero_grad()
-                self.critic_optimizer.zero_grad()
-                loss.backward()
+            if self.max_grad_norm is not None:
+                nn.utils.clip_grad_norm_(self.actor.parameters(), self.max_grad_norm)
+                nn.utils.clip_grad_norm_(self.critic.parameters(), self.max_grad_norm)
 
-                if self.max_grad_norm is not None:
-                    nn.utils.clip_grad_norm_(self.actor.parameters(), self.max_grad_norm)
-                    nn.utils.clip_grad_norm_(self.critic.parameters(), self.max_grad_norm)
-
-                self.actor_optimizer.step()
-                self.critic_optimizer.step()
+            self.actor_optimizer.step()
+            self.critic_optimizer.step()
 
     def _clear_rollout(self):
         self.states.clear()
