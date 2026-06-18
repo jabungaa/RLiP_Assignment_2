@@ -37,13 +37,13 @@ def parse_args():
                         help="Start cell as col,row. If omitted, first start/empty cell is used.")
     parser.add_argument("--reward", choices=("default", "high"), default="high")
     parser.add_argument("--sigma", type=float, default=0.0)
-    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--device", type=str, default="cpu",
                         help='Torch device to use: "cpu", "cuda", or "cuda:0".')
 
     parser.add_argument("--episodes", type=int, default=1000)
     parser.add_argument("--iters", type=int, default=1000)
-    parser.add_argument("--train_start_mode", choices=("random", "fixed"), default="fixed",
+    parser.add_argument("--train_start_mode", choices=("random", "fixed"), default="random",
                         help="Training start positions. Evaluation always uses --start_pos.")
     parser.add_argument("--eval_episodes", type=int, default=1)
     parser.add_argument("--eval_max_steps", type=int, default=1000)
@@ -74,12 +74,18 @@ def parse_args():
                              "them, so the goal reward becomes ~1. Default: auto from "
                              "--reward (default=10, high=10000).")
     parser.add_argument("--max_grad_norm", type=float, default=1000000.0)
+    parser.add_argument("--save_train_images", action="store_true",
+                        help="Save a trajectory image per training episode to "
+                             "results/<timestamp>_training/.")
+    parser.add_argument("--greedy_eval_interval", type=int, default=0,
+                        help="Run a greedy eval check every N training episodes and stop "
+                             "early if the target is reached. 0 = disabled (default).")
 
     parser.add_argument("--agent_radius", type=float, default=0.2,
                         help="Agent disc radius in metres. Default 0.2.")
     parser.add_argument("--move_distance", type=float, default=0.2,
                         help="Distance moved per forward action in metres. Default 0.2.")
-    parser.add_argument("--turn_angle_deg", type=float, default=45.0,
+    parser.add_argument("--turn_angle_deg", type=float, default=15.0,
                         help="Angle rotated per turn action in degrees. Default 45.")
 
     return parser.parse_args()
@@ -126,15 +132,20 @@ def make_training_start_sampler(grid_fp: Path, fixed_start: tuple[int, int],
     return random_start
 
 
-def train_ppo(agent, env, episodes: int, iters: int, start_sampler):
+def train_ppo(agent, env, episodes: int, iters: int, start_sampler,
+              train_images_dir=None, greedy_eval_interval=0, greedy_eval_fn=None):
     agent.set_training(True)
     successes = []
+    consecutive_successes = 0
+    next_save_threshold = 20  # first doubling checkpoint after 10
+    early_stopped = False
 
     for episode in trange(episodes, desc="Training PPO"):
         state = env.reset(agent_start_pos=start_sampler())
         agent.new_episode(state)
 
         reached = False
+        path = [(env.x, env.y)] if train_images_dir is not None else None
 
         for _ in range(iters):
             action = agent.take_action(state)
@@ -142,22 +153,45 @@ def train_ppo(agent, env, episodes: int, iters: int, start_sampler):
 
             agent.update(state, reward, info["actual_action"], terminated)
 
-            reached = len(env.targets) == 0
+            if path is not None:
+                path.append((env.x, env.y))
             if terminated:
+                reached = True
                 break
         else:
             agent.finish_rollout(state)
 
         successes.append(1 if reached else 0)
 
+        if reached:
+            consecutive_successes += 1
+            if train_images_dir is not None:
+                if consecutive_successes <= 10 or consecutive_successes >= next_save_threshold:
+                    img = env.trajectory_image(path)
+                    img.save(train_images_dir / f"episode_{episode:04d}.png")
+                    if consecutive_successes >= next_save_threshold:
+                        next_save_threshold *= 2
+        else:
+            consecutive_successes = 0
+            next_save_threshold = 20
+
+        if (greedy_eval_interval > 0 and greedy_eval_fn is not None
+                and (episode + 1) % greedy_eval_interval == 0):
+            if greedy_eval_fn():
+                print(f"\n[Early stop] Greedy policy reached target at episode {episode + 1}.")
+                early_stopped = True
+                break
+
     agent.finish_rollout()
     agent.set_training(False)
     total_successes = int(sum(successes))
+    actual_episodes = len(successes)
     last_100 = successes[-100:] if successes else []
     return {
         "train_total_successes": total_successes,
-        "train_total_episodes": int(episodes),
-        "train_success_rate": float(total_successes / episodes) if episodes > 0 else 0.0,
+        "train_total_episodes": actual_episodes,
+        "train_early_stopped": early_stopped,
+        "train_success_rate": float(total_successes / actual_episodes) if actual_episodes > 0 else 0.0,
         "train_successes_last_100": int(sum(last_100)),
         "train_success_rate_last_100": float(np.mean(last_100)) if last_100 else 0.0,
     }
@@ -171,6 +205,7 @@ def evaluate_ppo(agent, Environment, grid_fp, reward_fn, start_pos, sigma,
     successes = []
     last_env = None
     last_path = []
+    last_actions = []
 
     for ep in trange(episodes, desc="Evaluating PPO"):
         env = Environment(
@@ -187,17 +222,20 @@ def evaluate_ppo(agent, Environment, grid_fp, reward_fn, start_pos, sigma,
         )
         state = env.reset()
         path = [(env.x, env.y)]
+        actions = []
         reached = False
         for _ in range(max_steps):
             action = agent.take_action(state)
+            actions.append(action)
             state, _reward, terminated, _info = env.step(action)
             path.append((env.x, env.y))
-            reached = len(env.targets) == 0
             if terminated:
+                reached = True
                 break
         successes.append(1 if reached else 0)
         last_env = env
         last_path = path
+        last_actions = actions
 
     if last_env is not None:
         from world.helpers import save_results
@@ -211,6 +249,10 @@ def evaluate_ppo(agent, Environment, grid_fp, reward_fn, start_pos, sigma,
     if last_env is not None and last_path:
         extra["eval_steps"] = len(last_path) - 1
         extra["eval_final_pos"] = [round(float(last_env.x), 4), round(float(last_env.y), 4)]
+        extra["eval_path"] = [
+            [round(float(x), 4), round(float(y), 4), a]
+            for (x, y), a in zip(last_path, last_actions + [None])
+        ]
     return {
         "eval_total_successes": total_successes,
         "eval_total_episodes": int(episodes),
@@ -315,6 +357,46 @@ def main():
     actual_device = str(agent.device)
     print(f"Agent actual device: {actual_device}")
 
+    run_ts = datetime.now().strftime("%Y-%m-%d__%H-%M-%S")
+    train_images_dir = None
+    if args.save_train_images or args.greedy_eval_interval > 0:
+        train_images_dir = Path(__file__).parent / "results" / f"{run_ts}_training"
+        train_images_dir.mkdir(parents=True, exist_ok=True)
+        print(f"Training images will be saved to {train_images_dir}/")
+
+    greedy_eval_fn = None
+    if args.greedy_eval_interval > 0:
+        greedy_eval_env = Environment(
+            grid_fp=args.grid,
+            no_gui=True,
+            sigma=0.0,
+            agent_start_pos=start_pos,
+            random_seed=args.seed,
+            reward_fn=reward_fn,
+            target_fps=-1,
+            agent_radius=args.agent_radius,
+            move_distance=args.move_distance,
+            turn_angle=radians(args.turn_angle_deg),
+        )
+        greedy_check_count = [0]
+        def greedy_eval_fn():
+            agent.set_training(False)
+            state = greedy_eval_env.reset()
+            path = [(greedy_eval_env.x, greedy_eval_env.y)]
+            reached = False
+            for _ in range(args.eval_max_steps):
+                action = agent.take_action(state)
+                state, _, terminated, _ = greedy_eval_env.step(action)
+                path.append((greedy_eval_env.x, greedy_eval_env.y))
+                if terminated:
+                    reached = True
+                    break
+            agent.set_training(True)
+            greedy_check_count[0] += 1
+            img = greedy_eval_env.trajectory_image(path)
+            img.save(train_images_dir / f"greedy_eval_{greedy_check_count[0]:04d}.png")
+            return reached
+
     t_train_start = time.time()
     train_metrics = train_ppo(
         agent,
@@ -322,6 +404,9 @@ def main():
         args.episodes,
         args.iters,
         start_sampler,
+        train_images_dir=train_images_dir,
+        greedy_eval_interval=args.greedy_eval_interval,
+        greedy_eval_fn=greedy_eval_fn,
     )
     train_metrics["train_time_s"] = round(time.time() - t_train_start, 2)
 
@@ -356,10 +441,20 @@ def main():
 
     results_dir = Path(__file__).parent / "results"
     results_dir.mkdir(exist_ok=True)
-    json_path = results_dir / f"{datetime.now().strftime('%Y-%m-%d__%H-%M-%S')}_metrics.json"
+
+    checkpoint_path = results_dir / f"{run_ts}_checkpoint.pt"
+    torch.save({
+        "actor_state_dict": agent.actor.state_dict(),
+        "critic_state_dict": agent.critic.state_dict(),
+        "args": {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()},
+    }, checkpoint_path)
+    print(f"Checkpoint saved to {checkpoint_path}")
+
+    json_path = results_dir / f"{run_ts}_metrics.json"
     with open(json_path, "w") as f:
         json.dump({
             "settings": {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()},
+            "checkpoint": str(checkpoint_path),
             **train_metrics,
             **eval_metrics,
         }, f, indent=2)

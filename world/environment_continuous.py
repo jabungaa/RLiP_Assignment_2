@@ -199,10 +199,11 @@ class EnvironmentContinuous:
             idx = random.randint(0, len(free) - 1)
             cell = (int(free[idx][0]), int(free[idx][1]))
 
-        # Centre of the chosen cell, with a random initial heading. ?? may need to be fixed
         self.x = cell[0] + 0.5
         self.y = cell[1] + 0.5
-        self.theta = random.uniform(-pi, pi)
+        #angle_idx = random.randint(0, self.N_RAYS - 1)
+        angle_idx =0
+        self.theta = (2 * pi * angle_idx / self.N_RAYS) - pi
 
     def _get_ray(self, x, y, ray_angle, walls, max_range=5.0):
         end_x = x + max_range * cos(ray_angle)
@@ -408,9 +409,11 @@ class EnvironmentContinuous:
                                  moved: bool) -> float:
         """High reward function: reach target (+10000), bump wall (-5), else step (-1)."""
         if target_reached:
-            return 10000000.0
+            return 1000.0
         if collided:
             return -5.0
+        if moved:
+            return 0.1
         return -1.0
     
     
