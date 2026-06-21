@@ -87,7 +87,7 @@ def print_comparison(results: dict):
         ("eval_total_reward", "Eval Reward"),
         ("eval_steps", "Eval Steps"),
         ("eval_spl", "Eval SPL"),
-        ("eval_avg_collisions", "Eval Avg. Collisions")
+        ("eval_avg_collisions", "Eval Avg. Collisions"),
         ("short_train_eval_spl", "Short Train Eval SPL"),
         ("mid_train_eval_spl", "Mid Train Eval SPL"),
         ("auc", "AUC (SPL vs Iterations)"),
@@ -173,7 +173,7 @@ def main():
             "eval_steps": dqn_eval.get("avg_steps", 0.0),
             "eval_success_rate": dqn_eval.get("eval_success_rate", 0.0),
             "eval_spl": dqn_eval.get("SPL", 0.0),
-            "eval_collisions":dqn_eval.get("avg_failed_moves", 0.0),
+            "eval_avg_collisions":dqn_eval.get("avg_failed_moves", 0.0),
             "short_train_eval_spl": short_train_dqn_eval.get("SPL", 0.0),
             "mid_train_eval_spl": mid_train_dqn_eval.get("SPL", 0.0),
         }
@@ -301,7 +301,7 @@ def main():
             "eval_steps": ppo_full_eval.get("eval_avg_steps", 0.0),
             "eval_success_rate": ppo_full_eval.get("eval_success_rate", 0.0),
             "eval_spl": ppo_full_eval.get("eval_spl", 0.0),
-            "eval_collisions":ppo_full_eval.get("eval_average_failed_moves", 0.0), 
+            "eval_avg_collisions":ppo_full_eval.get("eval_average_failed_moves", 0.0), 
             "short_train_eval_spl": ppo_short_eval.get("eval_spl", 0.0),
             "mid_train_eval_spl": ppo_mid_eval.get("eval_spl", 0.0),
         }
