@@ -176,20 +176,77 @@ def evaluate_ppo(agent, Environment, grid_fp, reward_fn, start_pos, sigma,
     """
     from evaluation import evaluate_agent
 
-    res = evaluate_agent(
-        agent, grid_fp,
-        episodes=episodes,
-        max_steps=max_steps,
-        sigma=sigma,
-        agent_start_pos=start_pos,
-        seed=seed,
-        reward_fn=reward_fn,
-        agent_radius=agent_radius,
-        move_distance=move_distance,
-        turn_angle_deg=turn_angle_deg,
-        optimal_steps=baseline_steps,
-        save_image=save_image,
+    eval_kwargs = {
+        "sigma": sigma,
+        "agent_start_pos": start_pos,
+        "reward_fn": reward_fn,
+        "agent_radius": agent_radius,
+        "move_distance": move_distance,
+        "turn_angle_deg": turn_angle_deg,
+        "optimal_steps": baseline_steps,
+    }
+
+    # Stochastic checkpoint evaluations (the 100-run calls with no image) are
+    # fail-fast: every run must finish within 150% of the baseline, so once one
+    # misses that limit the batch cannot pass and training should resume.
+    fail_fast = (
+        sigma != 0 and episodes > 1 and baseline_steps is not None
+        and not save_image
     )
+    if fail_fast:
+        threshold_steps = int(1.5 * baseline_steps)
+        batch_results = []
+        for ep in range(episodes):
+            episode_result = evaluate_agent(
+                agent, grid_fp,
+                episodes=1,
+                max_steps=min(max_steps, threshold_steps),
+                seed=seed + ep,
+                save_image=False,
+                **eval_kwargs,
+            )
+            batch_results.append(episode_result)
+            episode_success = episode_result["eval_success_per_episode"][0]
+            episode_steps = episode_result["eval_steps_per_episode"][0]
+            if not episode_success or episode_steps > threshold_steps:
+                break
+
+        successes = [
+            value
+            for result in batch_results
+            for value in result["eval_success_per_episode"]
+        ]
+        steps = [
+            value
+            for result in batch_results
+            for value in result["eval_steps_per_episode"]
+        ]
+        rewards = [
+            value
+            for result in batch_results
+            for value in result["eval_reward_per_episode"]
+        ]
+        last_result = batch_results[-1]
+        res = {
+            "eval_successes": int(sum(successes)),
+            "eval_episodes": len(successes),
+            "eval_success_rate": float(np.mean(successes)) if successes else 0.0,
+            "eval_avg_steps": float(np.mean(steps)) if steps else 0.0,
+            "eval_avg_reward": float(np.mean(rewards)) if rewards else 0.0,
+            "eval_steps_per_episode": steps,
+            "eval_success_per_episode": successes,
+            "eval_final_pos": last_result.get("eval_final_pos"),
+            "eval_path": last_result.get("eval_path"),
+        }
+    else:
+        res = evaluate_agent(
+            agent, grid_fp,
+            episodes=episodes,
+            max_steps=max_steps,
+            seed=seed,
+            save_image=save_image,
+            **eval_kwargs,
+        )
     successes = res.get("eval_success_per_episode", [])
     steps = res.get("eval_steps_per_episode", [])
     successful_steps = [n for n, success in zip(steps, successes) if success]
