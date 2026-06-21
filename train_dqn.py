@@ -4,7 +4,7 @@ from typing import Any
 from datetime import datetime
 import numpy as np
 import torch
-from tqdm import tqdm
+from tqdm import tqdm, trange
 
 from agents.DQN_agent import DQNAgent
 from world.environment_continuous import EnvironmentContinuous
@@ -58,6 +58,8 @@ def train_DQN(
 
     training_history = []
     step_count=0 #initialize a step counter which determines when we evaluate and stop
+    short_train_agent=None
+    mid_train_agent=None
     print(f"Training DQN agent on grid {grid} for a maximum of {max_steps_total} steps...")
     for episode in range(100000):#just a very high number we're never going to reach, we break based on total steps
         state = env.reset()
@@ -88,17 +90,15 @@ def train_DQN(
             #save models at different stages of training for evaluation later and print progress every 10k steps
             if step_count % 10000 == 0:
                 print(f"Step {step_count}/{max_steps_total}, Episode {episode}")
-            if step_count== short_train_steps_eval:
+            if short_train_agent is None and step_count >= short_train_steps_eval:
                 print(f"Store agent for evaluation at step {step_count}/{max_steps_total}:")
                 short_train_agent=copy.deepcopy(agent)
-            if step_count== mid_train_steps_eval:
+            if mid_train_agent is None and step_count >= mid_train_steps_eval:
                 print(f"Store agent for evaluation at step {step_count}/{max_steps_total}:")
                 mid_train_agent=copy.deepcopy(agent)
             if step_count== max_steps_total:
                 print(f"Reached max steps {max_steps_total} on episode {episode}. Ending training.")
                 break
-        if step_count== max_steps_total:
-            break
 
         
         episode_info = {
@@ -112,8 +112,9 @@ def train_DQN(
         }
 
         training_history.append(episode_info)
-        # print(episode_info)
-
+        #stop when max steps reached
+        if step_count== max_steps_total:
+            break 
     return agent, training_history, short_train_agent, mid_train_agent #return the final agent and the agents at the short and mid training points for evaluation
 
 def evaluate_DQN(
@@ -125,49 +126,69 @@ def evaluate_DQN(
     no_gui: bool = True,
     random_seed: int = 0,
     move_distance: float = 0.5, #this is currently hardcoded.
+    episodes: int = 100, #evaluate over multiple episodes to get a more stable estimate of performance
 ):
     grid = Path(grid)
+    cumulative_total_reward=0
+    step_counter=0
+    targets_reached=0
+    failed_moves=0 
+    SPL=0
 
-    env = EnvironmentContinuous(
-        grid_fp= grid,
-        no_gui= no_gui,
-        sigma= sigma,
-        agent_start_pos= agent_start_pos,
-        random_seed= random_seed,
-        move_distance= move_distance,
-    )
+    for ep in trange(episodes, desc="Evaluating DQN"):
+        env = EnvironmentContinuous(
+            grid_fp= grid,
+            no_gui= no_gui,
+            sigma= sigma,
+            agent_start_pos= agent_start_pos,
+            random_seed= random_seed+ep,
+            move_distance= move_distance,
+        )
 
-    old_epsilon = agent.epsilon
-    agent.epsilon = 0.0
+        old_epsilon = agent.epsilon
+        agent.epsilon = 0.0
 
-    state = env.reset()
-    agent.reset_episode()
+        state = env.reset()
+        agent.reset_episode()
 
-    total_reward = 0.0
-    terminated = False
+        total_reward = 0.0
+        terminated = False
 
-    for step in range(max_steps_per_episode): 
-        action = agent.take_action(state)
+        for step in range(max_steps_per_episode): 
+            action = agent.take_action(state)
 
-        next_state, reward, terminated, info = env.step(action)
-        state = next_state
-        total_reward += reward
+            next_state, reward, terminated, info = env.step(action)
+            state = next_state
+            total_reward += reward
+            step_counter+=1
+            
+            if terminated:
+                break
+            
 
-        if terminated:
-            break
+        agent.epsilon = old_epsilon
 
-    agent.epsilon = old_epsilon
-    SPL=terminated*(step+1)/25 #this is currently hardcoded for the medium grid start position (18,6) where 25 is the optimal number of steps with step size of 0.5
-    episode_result = {
-        "total_reward": total_reward,
-        "steps": step + 1,
-        "terminated": terminated,
-        "targets_reached": env.world_stats.get("total_targets_reached", 0),
-        "failed_moves": env.world_stats.get("total_failed_moves", 0),
+        
+        cumulative_total_reward+=total_reward
+        SPL+=terminated*25/(step+1) #this is currently hardcoded for the medium grid start position (18,6) where 25 is the optimal number of steps with step size of 0.5
+        failed_moves+=env.world_stats.get("total_failed_moves", 0)
+        targets_reached+=env.world_stats.get("total_targets_reached", 0)
+    
+    SPL=SPL/episodes
+    avg_total_reward=cumulative_total_reward/episodes
+    avg_steps=step_counter/episodes
+    avg_failed_moves=failed_moves/episodes
+    eval_success_rate=targets_reached/episodes
+    eval_result = {
+        "eval_success_rate": eval_success_rate,
         "SPL": SPL,
+        "total_reward": avg_total_reward,
+        "avg_steps": avg_steps,
+        "avg_failed_moves": avg_failed_moves,
+        
     }
 
-    return episode_result
+    return eval_result
 
 # agent, history = train_DQN(
 #     grid= "grid_configs/A1_grid.npy",

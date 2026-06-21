@@ -34,7 +34,7 @@ from world.grid_continuous import GridContinuous
 class EnvironmentContinuous:
     # Agent / motion parameters (metres, radians). One grid cell = one metre.
     AGENT_RADIUS = 0.2
-    MOVE_DISTANCE = 0.2
+    MOVE_DISTANCE = 0.5
     TURN_ANGLE = radians(15)
 
     N_ACTIONS = 4        # 0 = forward, 1 = turn left, 2 = turn right, 3= move backwards
@@ -50,7 +50,7 @@ class EnvironmentContinuous:
                  target_fps: int = 30,
                  random_seed: int | float | str | bytes | bytearray | None = 0,
                  agent_radius: float = 0.2,
-                 move_distance: float = 0.2,
+                 move_distance: float = 0.5,
                  turn_angle: float = radians(15)):
         """Creates the continuous Grid Environment for the Reinforcement Learning robot
         from the provided file.
@@ -354,7 +354,7 @@ class EnvironmentContinuous:
             else:
                 collided = True
                 self.world_stats["total_failed_moves"] += 1
-        if actual_action == 3:                       # backward
+        elif actual_action == 3:                       # backward
             moved = self._attempt_backward()
             if moved:
                 self.world_stats["total_agent_moves"] += 1
