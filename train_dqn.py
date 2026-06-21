@@ -125,70 +125,37 @@ def evaluate_DQN(
     agent_start_pos: tuple[int, int] | None = None,
     no_gui: bool = True,
     random_seed: int = 0,
-    move_distance: float = 0.5, #this is currently hardcoded.
-    episodes: int = 100, #evaluate over multiple episodes to get a more stable estimate of performance
+    move_distance: float = 0.5,
+    episodes: int = 100,  # multiple episodes for a more stable estimate
+    reward_fn=None,
+    optimal_steps: int = 25,  # SPL normalisation (25 = medium-grid optimum at step 0.5)
 ):
-    grid = Path(grid)
-    cumulative_total_reward=0
-    step_counter=0
-    targets_reached=0
-    failed_moves=0 
-    SPL=0
+    """Greedy evaluation of a DQN agent via the shared `evaluate_agent`.
 
-    for ep in trange(episodes, desc="Evaluating DQN"):
-        env = EnvironmentContinuous(
-            grid_fp= grid,
-            no_gui= no_gui,
-            sigma= sigma,
-            agent_start_pos= agent_start_pos,
-            random_seed= random_seed+ep,
-            move_distance= move_distance,
-        )
+    Uses the exact same evaluation procedure as PPO; the result is remapped to
+    the legacy DQN key names so existing callers (e.g. `train_and_evaluate.py`)
+    keep working.
+    """
+    from evaluation import evaluate_agent
 
-        old_epsilon = agent.epsilon
-        agent.epsilon = 0.0
-
-        state = env.reset()
-        agent.reset_episode()
-
-        total_reward = 0.0
-        terminated = False
-
-        for step in range(max_steps_per_episode): 
-            action = agent.take_action(state)
-
-            next_state, reward, terminated, info = env.step(action)
-            state = next_state
-            total_reward += reward
-            step_counter+=1
-            
-            if terminated:
-                break
-            
-
-        agent.epsilon = old_epsilon
-
-        
-        cumulative_total_reward+=total_reward
-        SPL+=terminated*25/(step+1) #this is currently hardcoded for the medium grid start position (18,6) where 25 is the optimal number of steps with step size of 0.5
-        failed_moves+=env.world_stats.get("total_failed_moves", 0)
-        targets_reached+=env.world_stats.get("total_targets_reached", 0)
-    
-    SPL=SPL/episodes
-    avg_total_reward=cumulative_total_reward/episodes
-    avg_steps=step_counter/episodes
-    avg_failed_moves=failed_moves/episodes
-    eval_success_rate=targets_reached/episodes
-    eval_result = {
-        "eval_success_rate": eval_success_rate,
-        "SPL": SPL,
-        "total_reward": avg_total_reward,
-        "avg_steps": avg_steps,
-        "avg_failed_moves": avg_failed_moves,
-        
+    res = evaluate_agent(
+        agent, grid,
+        episodes=episodes,
+        max_steps=max_steps_per_episode,
+        sigma=sigma,
+        agent_start_pos=agent_start_pos,
+        seed=random_seed,
+        reward_fn=reward_fn,
+        move_distance=move_distance,
+        optimal_steps=optimal_steps,
+    )
+    return {
+        "eval_success_rate": res["eval_success_rate"],
+        "SPL": res["eval_avg_spl"] if res["eval_avg_spl"] is not None else 0.0,
+        "total_reward": res["eval_avg_reward"],
+        "avg_steps": res["eval_avg_steps"],
+        "avg_failed_moves": res["eval_avg_failed_moves"],
     }
-
-    return eval_result
 
 # agent, history = train_DQN(
 #     grid= "grid_configs/A1_grid.npy",

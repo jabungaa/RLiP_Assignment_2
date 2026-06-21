@@ -1,8 +1,8 @@
-"""Standalone PPO success-rate runner.
+"""Standalone PPO success-rate CLI runner.
 
-This script trains and evaluates only `agents.PPO.PPO_agent`. It is intentionally
-separate from `new_test.py` and `test_agents.py` so PPO experiments can be run
-without also training PI, SARSA, or Monte Carlo agents.
+The training/evaluation logic now lives in `train_ppo.py` (so it can be reused
+by `bayesian_search.py` and `train_and_evaluate.py`); this file is just the
+command-line front-end around it.
 
 Example:
     python test_ppo.py --grid grid_configs/A1_grid.npy --episodes 1000
@@ -18,16 +18,17 @@ from math import radians
 from pathlib import Path
 
 import numpy as np
-from tqdm import trange
+
+from train_ppo import (
+    REWARD_SCALES,
+    parse_start_pos,
+    parse_hidden_sizes,
+    make_training_start_sampler,
+    train_ppo,
+    evaluate_ppo,
+)
 
 RESULTS_DIR = Path("results")
-
-# Goal-reward magnitude of each reward function; used to auto-set --reward_scale
-# so the agent trains on rewards of magnitude ~1.
-REWARD_SCALES = {
-    "default": 10.0,         # goal=10, step=-1, collision=-5
-    "high": 10.0,         # goal=100000, step=-1, collision=-5
-}
 
 
 def parse_args():
@@ -58,25 +59,20 @@ def parse_args():
     parser.add_argument("--minibatch_size", type=int, default=64,
                         help="Transitions per gradient step within each epoch. Default 64.")
     parser.add_argument("--replay_capacity", type=int, default=0,
-                        help="Off-policy replay buffer size. 0 = on-policy PPO (default). "
-                             "When > 0, each rollout is pushed into the buffer and training "
-                             "uses all stored transitions, reusing older data across rollouts.")
+                        help="Off-policy replay buffer size. 0 = on-policy PPO (default).")
     parser.add_argument("--rollout_steps", type=int, default=4096)
     parser.add_argument("--hidden_sizes", type=str, default="128,128",
                         help="Comma-separated actor/critic hidden sizes, e.g. 64,64.")
     parser.add_argument("--activation", choices=("tanh", "relu", "elu", "gelu"), default="tanh",
                         help="Hidden-layer activation function.")
     parser.add_argument("--fourier_freqs", type=int, default=0,
-                        help="Fourier frequency bands for raw continuous x,y. "
-                             "0 = disabled.")
+                        help="Fourier frequency bands for raw continuous x,y. 0 = disabled.")
     parser.add_argument("--reward_scale", type=float, default=None,
-                        help="Divide all training rewards by this before the agent sees "
-                             "them, so the goal reward becomes ~1. Default: auto from "
-                             "--reward (default=10, high=10000).")
+                        help="Divide all training rewards by this before the agent sees them. "
+                             "Default: auto from --reward.")
     parser.add_argument("--max_grad_norm", type=float, default=1000000.0)
     parser.add_argument("--save_train_images", action="store_true",
-                        help="Save a trajectory image per training episode to "
-                             "results/<timestamp>_training/.")
+                        help="Save a trajectory image per training episode.")
     parser.add_argument("--greedy_eval_interval", type=int, default=0,
                         help="Run a greedy eval check every N training episodes and stop "
                              "early if the target is reached. 0 = disabled (default).")
@@ -86,179 +82,9 @@ def parse_args():
     parser.add_argument("--move_distance", type=float, default=0.2,
                         help="Distance moved per forward action in metres. Default 0.2.")
     parser.add_argument("--turn_angle_deg", type=float, default=15.0,
-                        help="Angle rotated per turn action in degrees. Default 45.")
+                        help="Angle rotated per turn action in degrees. Default 15.")
 
     return parser.parse_args()
-
-
-def parse_start_pos(raw: str | None, grid_fp: Path) -> tuple[int, int]:
-    if raw is not None:
-        col, row = raw.split(",")
-        return int(col), int(row)
-
-    grid = np.load(grid_fp)
-    starts = np.argwhere(grid == 4)
-    if len(starts) > 0:
-        return int(starts[0][0]), int(starts[0][1])
-
-    empty = np.argwhere(grid == 0)
-    if len(empty) == 0:
-        raise ValueError(f"No empty start cell found in {grid_fp}")
-    return int(empty[0][0]), int(empty[0][1])
-
-
-def parse_hidden_sizes(raw: str) -> tuple[int, ...]:
-    if not raw.strip():
-        return ()
-    return tuple(int(part.strip()) for part in raw.split(",") if part.strip())
-
-
-def make_training_start_sampler(grid_fp: Path, fixed_start: tuple[int, int],
-                                mode: str, seed: int):
-    if mode == "fixed":
-        return lambda: fixed_start
-
-    grid = np.load(grid_fp)
-    empty_cells = np.argwhere(grid == 0)
-    if len(empty_cells) == 0:
-        raise ValueError(f"No empty training cells found in {grid_fp}")
-
-    rng = np.random.default_rng(seed)
-
-    def random_start():
-        col, row = empty_cells[int(rng.integers(len(empty_cells)))]
-        return int(col), int(row)
-
-    return random_start
-
-
-def train_ppo(agent, env, episodes: int, iters: int, start_sampler,
-              train_images_dir=None, greedy_eval_interval=0, greedy_eval_fn=None):
-    agent.set_training(True)
-    successes = []
-    consecutive_successes = 0
-    next_save_threshold = 20  # first doubling checkpoint after 10
-    early_stopped = False
-
-    for episode in trange(episodes, desc="Training PPO"):
-        state = env.reset(agent_start_pos=start_sampler())
-        agent.new_episode(state)
-
-        reached = False
-        path = [(env.x, env.y)] if train_images_dir is not None else None
-
-        for _ in range(iters):
-            action = agent.take_action(state)
-            state, reward, terminated, info = env.step(action)
-
-            agent.update(state, reward, info["actual_action"], terminated)
-
-            if path is not None:
-                path.append((env.x, env.y))
-            if terminated:
-                reached = True
-                break
-        else:
-            agent.finish_rollout(state)
-
-        successes.append(1 if reached else 0)
-
-        if reached:
-            consecutive_successes += 1
-            if train_images_dir is not None:
-                if consecutive_successes <= 10 or consecutive_successes >= next_save_threshold:
-                    img = env.trajectory_image(path)
-                    img.save(train_images_dir / f"episode_{episode:04d}.png")
-                    if consecutive_successes >= next_save_threshold:
-                        next_save_threshold *= 2
-        else:
-            consecutive_successes = 0
-            next_save_threshold = 20
-
-        if (greedy_eval_interval > 0 and greedy_eval_fn is not None
-                and (episode + 1) % greedy_eval_interval == 0):
-            if greedy_eval_fn():
-                print(f"\n[Early stop] Greedy policy reached target at episode {episode + 1}.")
-                early_stopped = True
-                break
-
-    agent.finish_rollout()
-    agent.set_training(False)
-    total_successes = int(sum(successes))
-    actual_episodes = len(successes)
-    last_100 = successes[-100:] if successes else []
-    return {
-        "train_total_successes": total_successes,
-        "train_total_episodes": actual_episodes,
-        "train_early_stopped": early_stopped,
-        "train_success_rate": float(total_successes / actual_episodes) if actual_episodes > 0 else 0.0,
-        "train_successes_last_100": int(sum(last_100)),
-        "train_success_rate_last_100": float(np.mean(last_100)) if last_100 else 0.0,
-    }
-
-
-def evaluate_ppo(agent, Environment, grid_fp, reward_fn, start_pos, sigma,
-                 seed, episodes, max_steps, agent_radius=0.2,
-                 move_distance=0.2, turn_angle_deg=15.0):
-    agent.set_training(False)
-
-    successes = []
-    last_env = None
-    last_path = []
-    last_actions = []
-
-    for ep in trange(episodes, desc="Evaluating PPO"):
-        env = Environment(
-            grid_fp=grid_fp,
-            no_gui=True,
-            sigma=sigma,
-            agent_start_pos=start_pos,
-            random_seed=seed + ep,
-            reward_fn=reward_fn,
-            target_fps=-1,
-            agent_radius=agent_radius,
-            move_distance=move_distance,
-            turn_angle=radians(turn_angle_deg),
-        )
-        state = env.reset()
-        path = [(env.x, env.y)]
-        actions = []
-        reached = False
-        for _ in range(max_steps):
-            action = agent.take_action(state)
-            actions.append(action)
-            state, _reward, terminated, _info = env.step(action)
-            path.append((env.x, env.y))
-            if terminated:
-                reached = True
-                break
-        successes.append(1 if reached else 0)
-        last_env = env
-        last_path = path
-        last_actions = actions
-
-    if last_env is not None:
-        from world.helpers import save_results
-        img = last_env.trajectory_image(last_path)
-        file_name = datetime.now().strftime("%Y-%m-%d__%H-%M-%S")
-        save_results(file_name, last_env.world_stats, img, show_images=False)
-        print(f"\n>>> Results saved to results/{file_name}.png / .txt ({len(last_path)} steps) <<<")
-
-    total_successes = int(sum(successes))
-    extra = {}
-    if last_env is not None and last_path:
-        extra["eval_steps"] = len(last_path) - 1
-        extra["eval_final_pos"] = [round(float(last_env.x), 4), round(float(last_env.y), 4)]
-        extra["eval_path"] = [
-            [round(float(x), 4), round(float(y), 4), a]
-            for (x, y), a in zip(last_path, last_actions + [None])
-        ]
-    return {
-        "eval_total_successes": total_successes,
-        "eval_total_episodes": int(episodes),
-        "eval_success_rate": float(total_successes / episodes) if episodes > 0 else 0.0,
-        **extra,
-    }
 
 
 def main():
@@ -277,8 +103,8 @@ def main():
             ) from exc
         if exc.name == "pygame":
             raise SystemExit(
-                "pygame is required by world.environment_continuous. Install project dependencies "
-                "with `pip install -r requirements.txt`, then rerun this script."
+                "pygame is required by world.environment_continuous. Install project "
+                "dependencies with `pip install -r requirements.txt`, then rerun."
             ) from exc
         raise
 
@@ -292,14 +118,10 @@ def main():
 
     start_pos = parse_start_pos(args.start_pos, args.grid)
     start_sampler = make_training_start_sampler(
-        args.grid,
-        fixed_start=start_pos,
-        mode=args.train_start_mode,
-        seed=args.seed,
+        args.grid, fixed_start=start_pos, mode=args.train_start_mode, seed=args.seed,
     )
     hidden_sizes = parse_hidden_sizes(args.hidden_sizes)
     cuda_available = torch.cuda.is_available()
-    cuda_device_count = torch.cuda.device_count()
     if args.device.startswith("cuda") and not cuda_available:
         raise SystemExit(
             f"Requested --device {args.device}, but torch.cuda.is_available() is False."
@@ -309,16 +131,8 @@ def main():
     print(f"Start position: {start_pos}")
     print(f"Reward: {args.reward}, sigma={args.sigma}, gamma={args.gamma}")
     print(f"Reward scale: {args.reward_scale:g} (rewards divided by this)")
-    print(f"Training start mode: {args.train_start_mode}")
-    print(f"Rollout steps: {args.rollout_steps}, update epochs: {args.update_epochs}")
-    print(f"Torch device requested: {args.device}")
-    print(f"CUDA available: {cuda_available}")
-    print(f"CUDA device count: {cuda_device_count}")
-    if cuda_available:
-        current_cuda_index = torch.cuda.current_device()
-        print(f"CUDA current device: {current_cuda_index} ({torch.cuda.get_device_name(current_cuda_index)})")
     print(f"Training: episodes={args.episodes}, max_steps_per_episode={args.iters}")
-    print(f"Testing: episodes={args.eval_episodes}, max_steps_per_episode={args.eval_max_steps}")
+    print(f"Torch device requested: {args.device} (cuda available: {cuda_available})")
 
     env = Environment(
         grid_fp=args.grid,
@@ -359,54 +173,15 @@ def main():
 
     run_ts = datetime.now().strftime("%Y-%m-%d__%H-%M-%S")
     train_images_dir = None
-    if args.save_train_images or args.greedy_eval_interval > 0:
+    if args.save_train_images:
         train_images_dir = Path(__file__).parent / "results" / f"{run_ts}_training"
         train_images_dir.mkdir(parents=True, exist_ok=True)
         print(f"Training images will be saved to {train_images_dir}/")
 
-    greedy_eval_fn = None
-    if args.greedy_eval_interval > 0:
-        greedy_eval_env = Environment(
-            grid_fp=args.grid,
-            no_gui=True,
-            sigma=0.0,
-            agent_start_pos=start_pos,
-            random_seed=args.seed,
-            reward_fn=reward_fn,
-            target_fps=-1,
-            agent_radius=args.agent_radius,
-            move_distance=args.move_distance,
-            turn_angle=radians(args.turn_angle_deg),
-        )
-        greedy_check_count = [0]
-        def greedy_eval_fn():
-            agent.set_training(False)
-            state = greedy_eval_env.reset()
-            path = [(greedy_eval_env.x, greedy_eval_env.y)]
-            reached = False
-            for _ in range(args.eval_max_steps):
-                action = agent.take_action(state)
-                state, _, terminated, _ = greedy_eval_env.step(action)
-                path.append((greedy_eval_env.x, greedy_eval_env.y))
-                if terminated:
-                    reached = True
-                    break
-            agent.set_training(True)
-            greedy_check_count[0] += 1
-            img = greedy_eval_env.trajectory_image(path)
-            img.save(train_images_dir / f"greedy_eval_{greedy_check_count[0]:04d}.png")
-            return reached
-
     t_train_start = time.time()
     train_metrics = train_ppo(
-        agent,
-        env,
-        args.episodes,
-        args.iters,
-        start_sampler,
+        agent, env, args.episodes, args.iters, start_sampler,
         train_images_dir=train_images_dir,
-        greedy_eval_interval=args.greedy_eval_interval,
-        greedy_eval_fn=greedy_eval_fn,
     )
     train_metrics["train_time_s"] = round(time.time() - t_train_start, 2)
 
@@ -426,17 +201,11 @@ def main():
     )
 
     print("\nPPO result")
-    print(f"Training start mode: {args.train_start_mode}")
-    print(f"Torch device: {actual_device}")
-    print(f"CUDA available: {cuda_available}")
-    print(f"Training episodes/max steps: {args.episodes}/{args.iters}")
-    print(f"Testing episodes/max steps: {args.eval_episodes}/{args.eval_max_steps}")
-    print(f"Training successes: {train_metrics['train_total_successes']}/{train_metrics['train_total_episodes']}")
+    print(f"Training successes: {train_metrics['train_total_successes']}/"
+          f"{train_metrics['train_total_episodes']}")
     print(f"Training success rate: {train_metrics['train_success_rate']:.2f}")
-    print(f"Training successes last 100: {train_metrics['train_successes_last_100']}/"
-          f"{min(100, train_metrics['train_total_episodes'])}")
-    print(f"Train success last 100: {train_metrics['train_success_rate_last_100']:.2f}")
-    print(f"Eval successes: {eval_metrics['eval_total_successes']}/{eval_metrics['eval_total_episodes']}")
+    print(f"Eval successes: {eval_metrics['eval_total_successes']}/"
+          f"{eval_metrics['eval_total_episodes']}")
     print(f"Eval success rate: {eval_metrics['eval_success_rate']:.2f}")
 
     results_dir = Path(__file__).parent / "results"

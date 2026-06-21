@@ -150,8 +150,18 @@ class EnvironmentContinuous:
     # ------------------------------------------------------------------ #
     def _build_geometry(self):
         """Builds the Shapely wall and target geometry from the grid.
-        Also, builds a STR tree of the obstacles to speed up ray intersection queries."""
-        
+        Also, builds a STR tree of the obstacles to speed up ray intersection queries.
+
+        The geometry (cells, walls, STRtree, target template) is cached per
+        grid file: repeated resets of the same environment only restore the
+        consumable target list instead of rebuilding the shapely geometry,
+        which is the expensive part of a reset.
+        """
+        if getattr(self, "_geom_grid_fp", None) == self.grid_fp:
+            # Reuse cached geometry; restore the targets the episode consumes.
+            self.targets = list(self._targets_master)
+            return
+
         grid = GridContinuous.from_file(self.grid_fp)
         self.cells = grid.cells
         for c, r in np.argwhere(self.cells == 4):
@@ -162,18 +172,21 @@ class EnvironmentContinuous:
         self.wall_segments = segments
         self.walls = unary_union([LineString(s) for s in segments])
 
-        # Each target cell becomes a unit square region to be reached.
-        self.targets = [box(int(c), int(r), int(c) + 1, int(r) + 1)
-                        for c, r in np.argwhere(self.cells == 3)]
-        self.n_targets_total = len(self.targets)
-
+        # Each target cell becomes a unit square region to be reached. A master
+        # copy is kept so resets can restore it (the live list is consumed as
+        # targets are reached).
+        self._targets_master = [box(int(c), int(r), int(c) + 1, int(r) + 1)
+                                for c, r in np.argwhere(self.cells == 3)]
+        self.targets = list(self._targets_master)
+        self.n_targets_total = len(self._targets_master)
 
         # Build a tree of the obstacles to speed up ray intersection queries
-        self.obstacles = list(self.walls.geoms) if hasattr(self.walls, 'geoms') else list(self.walls) # because MultiLineString is not iterable itself, 
+        self.obstacles = list(self.walls.geoms) if hasattr(self.walls, 'geoms') else list(self.walls) # because MultiLineString is not iterable itself,
                                                                                   # we need to extract its constituent parts
-        self.wall_tree = STRtree(self.obstacles) # this is done to speed up intersection checks, 
+        self.wall_tree = STRtree(self.obstacles) # this is done to speed up intersection checks,
                                            # only looking at points where the rays shoot out toward
                                            # offers signficant speed up compared to checking all obstacles (~4x on my pc)
+        self._geom_grid_fp = self.grid_fp
 
     def _validate_start_cell(self, cell: tuple[int, int]):
         c, r = cell
@@ -354,7 +367,7 @@ class EnvironmentContinuous:
             else:
                 collided = True
                 self.world_stats["total_failed_moves"] += 1
-        elif actual_action == 3:                       # backward
+        elif actual_action == 3:                     # backward
             moved = self._attempt_backward()
             if moved:
                 self.world_stats["total_agent_moves"] += 1

@@ -210,6 +210,17 @@ class GridContinuous(Grid):
         for (x1, y1), (x2, y2) in segments:
             ax.plot([x1, x2], [y1, y2], "o", color="crimson", markersize=4)
 
+        # Start (cell value 4) and end/target (cell value 3) positions, drawn
+        # at the centre of their cells.
+        for c, r in np.argwhere(self.cells == 4):
+            ax.plot(c + 0.5, r + 0.5, marker="o", markersize=12,
+                    markerfacecolor="#2ca02c", markeredgecolor="black",
+                    linestyle="none", label="start", zorder=5)
+        for c, r in np.argwhere(self.cells == 3):
+            ax.plot(c + 0.5, r + 0.5, marker="*", markersize=18,
+                    markerfacecolor="#1f77b4", markeredgecolor="black",
+                    linestyle="none", label="end", zorder=5)
+
         ax.set_xlim(-0.5, n_cols + 0.5)
         ax.set_ylim(-0.5, n_rows + 0.5)
         ax.set_aspect("equal")
@@ -218,6 +229,12 @@ class GridContinuous(Grid):
         ax.grid(True, color="0.9", linewidth=0.5)
         ax.set_xticks(range(n_cols + 1))
         ax.set_yticks(range(n_rows + 1))
+
+        # De-duplicate legend labels (one entry per type even with many cells).
+        handles, labels = ax.get_legend_handles_labels()
+        if labels:
+            unique = dict(zip(labels, handles))
+            ax.legend(unique.values(), unique.keys(), loc="upper right")
 
         if save_path:
             fig.savefig(save_path, dpi=120, bbox_inches="tight")
@@ -231,7 +248,7 @@ if __name__ == "__main__":
 
     repo_root = Path(__file__).resolve().parents[1]
     grid_fp = Path(sys.argv[1]) if len(sys.argv) > 1 \
-        else repo_root / "grid_configs" / "demo_xfig.npy"
+        else repo_root / "grid_configs" / "restaurant_test.npy"
     grid = GridContinuous.from_file(grid_fp)
     segs = grid.to_segments()
     print(f"[v2] {grid_fp.name} {grid.cells.shape}: {len(segs)} wall segments")
