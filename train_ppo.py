@@ -95,6 +95,7 @@ def train_ppo(agent, env, episodes: int, iters: int, start_sampler,
     consecutive_successes = 0
     next_save_threshold = 20  # first doubling checkpoint after 10
     early_stopped = False
+    evaluation_history = []
 
     for episode in trange(episodes, desc="Training PPO"):
         state = env.reset(agent_start_pos=start_sampler())
@@ -133,8 +134,16 @@ def train_ppo(agent, env, episodes: int, iters: int, start_sampler,
 
         if (greedy_eval_interval > 0 and greedy_eval_fn is not None
                 and (episode + 1) % greedy_eval_interval == 0):
-            if greedy_eval_fn():
-                print(f"\n[Early stop] Greedy policy reached target at episode {episode + 1}.")
+            evaluation = greedy_eval_fn()
+            if isinstance(evaluation, dict):
+                evaluation = dict(evaluation)
+                should_stop = bool(evaluation.pop("stop_training", False))
+                evaluation["training_episode"] = episode + 1
+                evaluation_history.append(evaluation)
+            else:
+                should_stop = bool(evaluation)
+            if should_stop:
+                print(f"\n[Early stop] Evaluation criterion met at episode {episode + 1}.")
                 early_stopped = True
                 break
 
@@ -150,12 +159,14 @@ def train_ppo(agent, env, episodes: int, iters: int, start_sampler,
         "train_success_rate": float(total_successes / actual_episodes) if actual_episodes > 0 else 0.0,
         "train_successes_last_100": int(sum(last_100)),
         "train_success_rate_last_100": float(np.mean(last_100)) if last_100 else 0.0,
+        "evaluation_history": evaluation_history,
     }
 
 
 def evaluate_ppo(agent, Environment, grid_fp, reward_fn, start_pos, sigma,
                  seed, episodes, max_steps, agent_radius=0.2,
-                 move_distance=0.2, turn_angle_deg=15.0):
+                 move_distance=0.2, turn_angle_deg=15.0,
+                 baseline_steps=None, save_image=True):
     """Greedy evaluation over `episodes` via the shared `evaluate_agent`.
 
     Identical evaluation procedure to the DQN agent; the result is remapped to
@@ -176,15 +187,45 @@ def evaluate_ppo(agent, Environment, grid_fp, reward_fn, start_pos, sigma,
         agent_radius=agent_radius,
         move_distance=move_distance,
         turn_angle_deg=turn_angle_deg,
-        save_image=True,
+        optimal_steps=baseline_steps,
+        save_image=save_image,
     )
+    successes = res.get("eval_success_per_episode", [])
+    steps = res.get("eval_steps_per_episode", [])
+    successful_steps = [n for n, success in zip(steps, successes) if success]
+    within_limit = None
+    within_count = None
+    spl = None
+    if baseline_steps is not None:
+        limit = 1.5 * baseline_steps
+        within_count = sum(
+            1 for n, success in zip(steps, successes) if success and n <= limit
+        )
+        within_limit = within_count / episodes if episodes else 0.0
+
+        # Aggregate SPL requested by the CLI. For one greedy run this uses that
+        # run's step count; for 100 stochastic runs it uses their average. The
+        # success-rate factor gives failed evaluations zero contribution.
+        if steps:
+            spl = (res["eval_success_rate"] * baseline_steps
+                   / max(baseline_steps, res["eval_avg_steps"]))
+
     return {
         "eval_total_successes": res["eval_successes"],
         "eval_total_episodes": res["eval_episodes"],
         "eval_success_rate": res["eval_success_rate"],
         "eval_avg_steps": res["eval_avg_steps"],
         "eval_avg_reward": res["eval_avg_reward"],
+        "eval_baseline_steps": baseline_steps,
+        "eval_successful_avg_steps": (
+            float(np.mean(successful_steps)) if successful_steps else None
+        ),
+        "eval_within_150pct_baseline_count": within_count,
+        "eval_within_150pct_baseline_rate": within_limit,
+        "eval_spl": spl,
         "eval_steps": res.get("eval_steps_per_episode", [0])[-1] if res.get("eval_steps_per_episode") else 0,
+        "eval_steps_per_episode": steps,
+        "eval_success_per_episode": successes,
         "eval_final_pos": res.get("eval_final_pos"),
         "eval_path": res.get("eval_path"),
     }

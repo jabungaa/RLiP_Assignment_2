@@ -37,7 +37,8 @@ def parse_args():
     parser.add_argument("--start_pos", type=str, default=None,
                         help="Start cell as col,row. If omitted, first start/empty cell is used.")
     parser.add_argument("--reward", choices=("default", "high"), default="high")
-    parser.add_argument("--sigma", type=float, default=0.0)
+    parser.add_argument("--sigma", "--alpha", dest="sigma", type=float, default=0.0,
+                        help="Environment stochasticity (also accepted as --alpha).")
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--device", type=str, default="cpu",
                         help='Torch device to use: "cpu", "cuda", or "cuda:0".')
@@ -73,9 +74,9 @@ def parse_args():
     parser.add_argument("--max_grad_norm", type=float, default=1000000.0)
     parser.add_argument("--save_train_images", action="store_true",
                         help="Save a trajectory image per training episode.")
-    parser.add_argument("--greedy_eval_interval", type=int, default=0,
-                        help="Run a greedy eval check every N training episodes and stop "
-                             "early if the target is reached. 0 = disabled (default).")
+    parser.add_argument("--greedy_eval_interval", type=int, default=20,
+                        help="Evaluate every N training episodes (100 runs when sigma is "
+                             "non-zero, otherwise one greedy run). 0 disables checks.")
 
     parser.add_argument("--agent_radius", type=float, default=0.2,
                         help="Agent disc radius in metres. Default 0.2.")
@@ -147,6 +148,15 @@ def main():
         turn_angle=radians(args.turn_angle_deg),
     )
 
+    from optimal_path import approx_optimal_steps
+    env.reset(agent_start_pos=start_pos)
+    baseline_steps = approx_optimal_steps(
+        env, (env.x, env.y), free_initial_heading=True,
+    )
+    if baseline_steps is None:
+        raise SystemExit("The heuristic planner could not find a path to the target.")
+    print(f"Heuristic baseline: {baseline_steps} steps")
+
     agent = PPO_agent(
         grid=args.grid,
         gamma=args.gamma,
@@ -179,12 +189,64 @@ def main():
         print(f"Training images will be saved to {train_images_dir}/")
 
     t_train_start = time.time()
+
+    checkpoint_eval_episodes = 100 if args.sigma != 0 else 1
+
+    def checkpoint_evaluation():
+        metrics = evaluate_ppo(
+            agent=agent,
+            Environment=Environment,
+            grid_fp=args.grid,
+            reward_fn=reward_fn,
+            start_pos=start_pos,
+            sigma=args.sigma,
+            seed=args.seed,
+            episodes=checkpoint_eval_episodes,
+            max_steps=args.eval_max_steps,
+            agent_radius=args.agent_radius,
+            move_distance=args.move_distance,
+            turn_angle_deg=args.turn_angle_deg,
+            baseline_steps=baseline_steps,
+            save_image=False,
+        )
+        if args.sigma != 0:
+            stop = metrics["eval_within_150pct_baseline_rate"] == 1.0
+            print(
+                f"\n[Evaluation] avg steps={metrics['eval_avg_steps']:.2f}, "
+                f"within 150% baseline="
+                f"{metrics['eval_within_150pct_baseline_count']}/100"
+            )
+        else:
+            stop = metrics["eval_total_successes"] == 1
+            print(
+                f"\n[Greedy evaluation] success={bool(stop)}, "
+                f"steps={metrics['eval_steps']}"
+            )
+        # Keep checkpoint history compact: these are the requested summary
+        # values; per-step paths remain available only for the final evaluation.
+        return {
+            "eval_total_successes": metrics["eval_total_successes"],
+            "eval_total_episodes": metrics["eval_total_episodes"],
+            "eval_success_rate": metrics["eval_success_rate"],
+            "eval_avg_steps": metrics["eval_avg_steps"],
+            "eval_baseline_steps": metrics["eval_baseline_steps"],
+            "eval_within_150pct_baseline_count":
+                metrics["eval_within_150pct_baseline_count"],
+            "eval_within_150pct_baseline_rate":
+                metrics["eval_within_150pct_baseline_rate"],
+            "eval_spl": metrics["eval_spl"],
+            "stop_training": stop,
+        }
+
     train_metrics = train_ppo(
         agent, env, args.episodes, args.iters, start_sampler,
         train_images_dir=train_images_dir,
+        greedy_eval_interval=args.greedy_eval_interval,
+        greedy_eval_fn=checkpoint_evaluation,
     )
     train_metrics["train_time_s"] = round(time.time() - t_train_start, 2)
 
+    final_eval_episodes = 100 if args.sigma != 0 else args.eval_episodes
     eval_metrics = evaluate_ppo(
         agent=agent,
         Environment=Environment,
@@ -193,11 +255,12 @@ def main():
         start_pos=start_pos,
         sigma=args.sigma,
         seed=args.seed,
-        episodes=args.eval_episodes,
+        episodes=final_eval_episodes,
         max_steps=args.eval_max_steps,
         agent_radius=args.agent_radius,
         move_distance=args.move_distance,
         turn_angle_deg=args.turn_angle_deg,
+        baseline_steps=baseline_steps,
     )
 
     print("\nPPO result")
@@ -207,6 +270,8 @@ def main():
     print(f"Eval successes: {eval_metrics['eval_total_successes']}/"
           f"{eval_metrics['eval_total_episodes']}")
     print(f"Eval success rate: {eval_metrics['eval_success_rate']:.2f}")
+    print(f"Heuristic baseline steps: {baseline_steps}")
+    print(f"Eval SPL: {eval_metrics['eval_spl']}")
 
     results_dir = Path(__file__).parent / "results"
     results_dir.mkdir(exist_ok=True)
@@ -224,6 +289,7 @@ def main():
         json.dump({
             "settings": {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()},
             "checkpoint": str(checkpoint_path),
+            "heuristic_baseline_steps": baseline_steps,
             **train_metrics,
             **eval_metrics,
         }, f, indent=2)
