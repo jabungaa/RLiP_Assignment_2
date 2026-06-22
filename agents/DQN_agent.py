@@ -149,10 +149,10 @@ class DQNAgent(BaseAgent):
     def update_target_network(self):
         self.target_network.load_state_dict(self.policy_network.state_dict())
 
-    def _set_linear_epsilon(self, ep, n_episodes):
-        if n_episodes <= 1:
-            self.epsilon = self.epsilon_end
-            return
+    def _set_linear_epsilon(self, step_count, total_steps):
+        fraction = min(step_count / total_steps, 1.0)
+        self.epsilon = self.epsilon_start + fraction * (self.epsilon_end - self.epsilon_start)
+        return
 
         fraction = min(ep / n_episodes, 1.0)
 

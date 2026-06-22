@@ -21,10 +21,24 @@ import copy
 from matplotlib.pyplot import step
 import numpy as np
 from tqdm import trange
+import random
+import torch
+import os
+
+def set_all_seeds(seed: int):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    os.environ["PYTHONHASHSEED"] = str(seed)  # controls Python hash randomness
 
 
 def train_ppo(agent, env,  start_pos, max_steps_total: int=500000, short_train_steps_eval: int=50000,  mid_train_steps_eval: int=100000, max_steps_per_episode: int=1000,
-              train_images_dir=None, greedy_eval_interval=0, greedy_eval_fn=None):
+              train_images_dir=None, greedy_eval_interval=0, greedy_eval_fn=None, seed=0):
+    set_all_seeds(seed)
     agent.set_training(True)
     training_history = []
     step_count=0 #initialize a step counter which determines when we evaluate and stop
@@ -121,7 +135,7 @@ def evaluate_ppo(agent, Environment, grid_fp, reward_fn, start_pos, sigma,
             if terminated:
                 break
         
-        SPL+=terminated*25/(step+1) #this is currently hardcoded for the medium grid start position (18,6) where 25 is the optimal number of steps with step size of 0.5
+        SPL+=terminated*23/(step+1) #this is currently hardcoded for the medium grid start position (18,10) where 23 is the optimal number of steps with step size of 0.5
         failed_moves+=env.world_stats.get("total_failed_moves", 0)
         targets_reached+=terminated
         cumulative_total_reward+=total_reward

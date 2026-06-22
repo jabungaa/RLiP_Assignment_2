@@ -8,6 +8,18 @@ from tqdm import tqdm, trange
 
 from agents.DQN_agent import DQNAgent
 from world.environment_continuous import EnvironmentContinuous
+import random
+import os
+
+def set_all_seeds(seed: int):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    os.environ["PYTHONHASHSEED"] = str(seed)  # controls Python hash randomness
 
 def train_DQN(
     grid: str | Path,
@@ -32,8 +44,7 @@ def train_DQN(
 ) -> tuple[DQNAgent, list[dict[str, Any]]]:
     
     grid = Path(grid)
-    np.random.seed(random_seed)
-    torch.manual_seed(random_seed)
+    set_all_seeds(random_seed)
 
     env = EnvironmentContinuous(
         grid_fp= grid,
@@ -65,7 +76,7 @@ def train_DQN(
         state = env.reset()
         agent.reset_episode()
 
-        agent._set_linear_epsilon(episode, n_episodes_epsilon_decay)
+        agent._set_linear_epsilon(step_count, max_steps_total)
 
         total_reward = 0.0
         terminated = False
@@ -156,6 +167,8 @@ def evaluate_DQN(
         "avg_steps": res["eval_avg_steps"],
         "avg_failed_moves": res["eval_avg_failed_moves"],
     }
+
+
 
 # agent, history = train_DQN(
 #     grid= "grid_configs/A1_grid.npy",

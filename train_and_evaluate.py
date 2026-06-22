@@ -20,6 +20,18 @@ from agents.PPO import PPO_agent
 from world.environment_continuous import EnvironmentContinuous
 from world.path_visualizer import visualize_path, save_path_image
 import torch
+import random
+import os
+
+def set_all_seeds(seed: int):
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+        os.environ["PYTHONHASHSEED"] = str(seed)  # controls Python hash randomness
 
 print("FILE LOADED")
 
@@ -100,6 +112,10 @@ def print_comparison(results: dict):
 def main():
     print("ENTERED MAIN")
     args = parse_args()
+    set_all_seeds(args.seed)
+
+    
+    
     stamp = datetime.now().strftime("%Y-%m-%d__%H-%M-%S")
     args.results_dir.mkdir(parents=True, exist_ok=True)
     start_pos = parse_start_pos(args.start_pos, args.grid)
@@ -244,7 +260,8 @@ def main():
             short_train_steps_eval=args.ppo_short_train,
             mid_train_steps_eval=args.ppo_mid_train,
             max_steps_per_episode=args.ppo_max_steps_per_episode,
-            start_pos=start_pos
+            start_pos=start_pos,
+            seed=args.seed
             # repeat_visit_penalty=0.0
         )
         

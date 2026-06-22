@@ -24,37 +24,6 @@ from torch.distributions import Categorical
 from agents import BaseAgent
 
 
-class _ReplayBuffer:
-    """Circular buffer storing pre-processed PPO transitions for off-policy reuse."""
-
-    def __init__(self, capacity: int):
-        self._states:        deque[np.ndarray] = deque(maxlen=capacity)
-        self._actions:       deque[int]        = deque(maxlen=capacity)
-        self._old_log_probs: deque[float]      = deque(maxlen=capacity)
-        self._advantages:    deque[float]      = deque(maxlen=capacity)
-        self._returns:       deque[float]      = deque(maxlen=capacity)
-
-    def add(self, states, actions, old_log_probs, advantages, returns):
-        for s, a, lp, adv, ret in zip(states, actions, old_log_probs, advantages, returns):
-            self._states.append(s)
-            self._actions.append(int(a))
-            self._old_log_probs.append(float(lp))
-            self._advantages.append(float(adv))
-            self._returns.append(float(ret))
-
-    def __len__(self):
-        return len(self._states)
-
-    def as_tensors(self, device):
-        return (
-            list(self._states),
-            torch.as_tensor(list(self._actions),       dtype=torch.long,    device=device),
-            torch.as_tensor(list(self._old_log_probs), dtype=torch.float32, device=device),
-            torch.as_tensor(list(self._advantages),    dtype=torch.float32, device=device),
-            torch.as_tensor(list(self._returns),       dtype=torch.float32, device=device),
-        )
-
-
 NUM_ACTIONS = 4  # 0=forward, 1=turn left, 2=turn right, 3=backward
 
 _ACTIVATIONS: dict[str, type[nn.Module]] = {
@@ -123,7 +92,6 @@ class PPO_agent(BaseAgent):
         update_epochs: int = 4,
         minibatch_size: int = 64,
         rollout_steps: int = 128,
-        replay_capacity: int = 0,
         hidden_sizes: tuple[int, ...] | list[int] = (64, 128),
         advantage_norm: bool = True,
         reward_scale: float = 1.0,
@@ -162,12 +130,7 @@ class PPO_agent(BaseAgent):
                 already normalizes the state, so this is just the raw count
                 of features: 4 base (x, y, cos θ, sin θ) + N_RAYS lidar = 22.
             seed: Optional RNG seed for NumPy and PyTorch.
-            device: Optional torch device, e.g. "cpu" or "cuda".
-            replay_capacity: Size of the off-policy replay buffer. When > 0,
-                each rollout is pushed into the buffer and training uses all
-                stored transitions, reusing older data across rollouts.
-                0 (default) keeps the original on-policy PPO behaviour.
-        """
+            device: Optional torch device, e.g. "cpu" or "cuda"."""
         super().__init__()
 
         if seed is not None:
@@ -182,7 +145,6 @@ class PPO_agent(BaseAgent):
         self.update_epochs = update_epochs
         self.minibatch_size = minibatch_size
         self.rollout_steps = rollout_steps
-        self._replay = _ReplayBuffer(replay_capacity) if replay_capacity > 0 else None
         self.hidden_sizes = tuple(hidden_sizes)
         self.advantage_norm = advantage_norm
         if reward_scale <= 0:
@@ -389,18 +351,7 @@ class PPO_agent(BaseAgent):
         adv_tensor = torch.as_tensor(advantages, dtype=torch.float32, device=self.device)
         ret_tensor = torch.as_tensor(returns, dtype=torch.float32, device=self.device)
 
-        if self._replay is not None:
-            self._replay.add(
-                states,
-                actions.tolist(),
-                old_log_probs.tolist(),
-                advantages.tolist(),
-                ret_tensor.tolist(),
-            )
-            rb_states, rb_actions, rb_lp, rb_adv, rb_ret = self._replay.as_tensors(self.device)
-            self._optimize(rb_states, rb_actions, rb_lp, rb_adv, rb_ret)
-        else:
-            self._optimize(states, actions, old_log_probs, adv_tensor, ret_tensor)
+        self._optimize(states, actions, old_log_probs, adv_tensor, ret_tensor)
 
         self._clear_rollout()
 
