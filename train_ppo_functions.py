@@ -1,11 +1,6 @@
 """Standalone PPO success-rate runner.
+Functions to be used by train_and_evaluate.py
 
-This script trains and evaluates only `agents.PPO.PPO_agent`. It is intentionally
-separate from `new_test.py` and `test_agents.py` so PPO experiments can be run
-without also training PI, SARSA, or Monte Carlo agents.
-
-Example:
-    python test_ppo.py --grid grid_configs/A1_grid.npy --episodes 1000
 """
 
 from __future__ import annotations

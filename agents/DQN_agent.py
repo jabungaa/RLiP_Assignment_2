@@ -154,9 +154,6 @@ class DQNAgent(BaseAgent):
         self.epsilon = self.epsilon_start + fraction * (self.epsilon_end - self.epsilon_start)
         return
 
-        fraction = min(ep / n_episodes, 1.0)
-
-        self.epsilon = self.epsilon_start + fraction * (self.epsilon_end - self.epsilon_start)
 
     def reset_episode(self):
         self.previous_state = None
