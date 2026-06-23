@@ -22,6 +22,7 @@ from world.path_visualizer import visualize_path, save_path_image
 import torch
 import random
 import os
+from math import radians
 
 def set_all_seeds(seed: int):
         random.seed(seed)
@@ -39,15 +40,15 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Train and evaluate DQN and/or PPO agents.")
 
     # Shared configurations
-    parser.add_argument("--grid", type=Path, default=Path("grid_configs/A1_grid.npy"), help="Path to the .npy grid file.")
-    parser.add_argument("--agents", choices=("dqn", "ppo", "both"), default="both", help="Which agent(s) to run.")
-    parser.add_argument("--sigma", type=float, default=0.1, help="Environment stochasticity (training).")
+    parser.add_argument("--grid", type=Path, default=Path("grid_configs/restaurant_test.npy"), help="Path to the .npy grid file.")
+    parser.add_argument("--agents", choices=("dqn", "ppo", "both"), default="ppo", help="Which agent(s) to run.")
+    parser.add_argument("--sigma", type=float, default=0.05, help="Environment stochasticity (training).")
     parser.add_argument("--eval_sigma", type=float, default=0.0, help="Environment stochasticity (evaluation).")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--start_pos", type=str, default=None, help="Agent start position as row,col.")
-    parser.add_argument("--no_gui", action="store_true", default=False,
+    parser.add_argument("--no_gui", action="store_true", default=True,
                     help="Disable GUI during training.")
-    parser.add_argument("--eval_gui", action="store_true", default=True, help="Enable GUI during evaluation.")
+    parser.add_argument("--eval_gui", action="store_true", default=False, help="Enable GUI during evaluation.")
     parser.add_argument("--results_dir", type=Path, default=Path("results"))
     parser.add_argument("--eval_episodes", type=int, default=1, help="Number of episodes for evaluation.")
 
@@ -67,8 +68,8 @@ def parse_args():
     ppo.add_argument("--ppo_max_steps_total", type=int, default=200000)
     ppo.add_argument("--ppo_short_train", type=int, default=50000)
     ppo.add_argument("--ppo_mid_train", type=int, default=100000)
-    ppo.add_argument("--ppo_max_steps_per_episode", type=int, default=1000)
-    ppo.add_argument("--ppo_eval_steps", type=int, default=50)
+    ppo.add_argument("--ppo_max_steps_per_episode", type=int, default=300)
+    ppo.add_argument("--ppo_eval_steps", type=int, default=200)
     ppo.add_argument("--ppo_policy_lr", type=float, default=3e-4)
     ppo.add_argument("--ppo_value_lr", type=float, default=1e-3)
     
@@ -141,7 +142,11 @@ def main():
             random_seed=args.seed,
             agent_start_pos=start_pos,
             no_gui=args.no_gui,
-            device=args.device
+            device=args.device,
+            # Same dynamics as PPO for a fair head-to-head comparison.
+            agent_radius=0.5,
+            move_distance=0.2,
+            turn_angle_deg=15.0,
         )
         
         dqn_train_successes = sum(1 for ep in dqn_history if ep["terminated"])
@@ -160,7 +165,10 @@ def main():
             sigma=args.eval_sigma,
             agent_start_pos=start_pos,
             no_gui=True,
-            episodes=args.eval_episodes
+            episodes=args.eval_episodes,
+            agent_radius=0.5,
+            move_distance=0.2,
+            turn_angle_deg=15.0,
         )
 
         mid_train_dqn_eval = evaluate_DQN(
@@ -170,7 +178,10 @@ def main():
             sigma=args.eval_sigma,
             agent_start_pos=start_pos,
             no_gui=True,
-            episodes=args.eval_episodes
+            episodes=args.eval_episodes,
+            agent_radius=0.5,
+            move_distance=0.2,
+            turn_angle_deg=15.0,
         )
 
         dqn_eval = evaluate_DQN(
@@ -180,7 +191,10 @@ def main():
             sigma=args.eval_sigma,
             agent_start_pos=start_pos,
             no_gui=True,
-            episodes=args.eval_episodes
+            episodes=args.eval_episodes,
+            agent_radius=0.5,
+            move_distance=0.2,
+            turn_angle_deg=15.0,
         )
         
         # Map DQN keys to standardized metrics keys
@@ -227,27 +241,36 @@ def main():
     if args.agents in ("ppo", "both"):
         print(f"\nStarting PPO Pipeline----------------------------------------------------------------------")
 
+        # Dynamics MUST match evaluation (radius 0.5, move 0.2) — these are the
+        # values trial 14 was tuned with in the Bayesian search.
         env = EnvironmentContinuous(
             grid_fp=args.grid,
             no_gui=args.no_gui,
             sigma=args.sigma,
             agent_start_pos=start_pos,
             random_seed=args.seed,
+            reward_fn=EnvironmentContinuous._high_reward_function,
+            agent_radius=0.5,
+            move_distance=0.2,
+            turn_angle=radians(15.0),
         )
-        
+
+        # Best PPO config from the Bayesian search (trial 14).
         ppo_agent = PPO_agent(
             grid=args.grid,
             gamma=0.999,
             gae_lambda=0.95,
-            clip_epsilon=0.2,
-            policy_lr=args.ppo_policy_lr,
-            value_lr=args.ppo_value_lr,
-            entropy_coef=0.01,
+            clip_epsilon=0.1881502205234746,
+            policy_lr=0.00028701686449364406,
+            value_lr=0.0010817190896430591,
+            entropy_coef=0.03824745415070534,
             update_epochs=4,
-            rollout_steps=128,
-            hidden_sizes=(64, 128),
-            reward_scale=100.0,
-            activation="tanh",
+            minibatch_size=128,
+            rollout_steps=1024,
+            hidden_sizes=(128, 128, 128),
+            reward_scale=1000.0,        # "high" reward goal magnitude
+            max_grad_norm=5.0,
+            activation="relu",
             seed=args.seed,
             device=args.device,
         )
@@ -283,7 +306,9 @@ def main():
             seed=args.seed,
             episodes=args.eval_episodes,
             max_steps=args.ppo_eval_steps,
-            # gamma=0.999
+            agent_radius=0.5,
+            move_distance=0.2,
+            turn_angle_deg=15.0,
         )
 
         ppo_short_eval = evaluate_ppo(
@@ -296,7 +321,9 @@ def main():
             seed=args.seed,
             episodes=args.eval_episodes,
             max_steps=args.ppo_eval_steps,
-            # gamma=0.999
+            agent_radius=0.5,
+            move_distance=0.2,
+            turn_angle_deg=15.0,
         )
 
         ppo_mid_eval = evaluate_ppo(
@@ -309,7 +336,9 @@ def main():
             seed=args.seed,
             episodes=args.eval_episodes,
             max_steps=args.ppo_eval_steps,
-            # gamma=0.999
+            agent_radius=0.5,
+            move_distance=0.2,
+            turn_angle_deg=15.0,
         )
 
         # Map PPO keys to standardized metrics keys

@@ -24,6 +24,7 @@ from math import radians
 from pathlib import Path
 
 import numpy as np
+from shapely.geometry import Point
 
 from world.environment_continuous import EnvironmentContinuous
 
@@ -31,6 +32,14 @@ from world.environment_continuous import EnvironmentContinuous
 # run at most once per start cell + dynamics, even across many evaluate_agent
 # calls (e.g. every trial of a hyperparameter search).
 _OPTIMAL_CACHE: dict = {}
+
+
+def _goal_distance(env, polys) -> float:
+    """Euclidean distance from the agent centre to the nearest target region."""
+    if not polys:
+        return 0.0
+    p = Point(env.x, env.y)
+    return min(poly.distance(p) for poly in polys)
 
 
 # --------------------------------------------------------------------------- #
@@ -120,6 +129,7 @@ def evaluate_agent(
     failed_moves_list = []           # collisions (failed moves) per episode
     step_ratios = []                 # actual / optimal, successful episodes only
     step_ratio_per_episode = []      # aligned with episodes (None where N/A)
+    goal_progress_list = []          # 1 - min_dist/initial_dist (closest approach)
     last_env = last_path = last_actions = None
 
     # Build the environment once (geometry is cached across resets); vary the
@@ -160,6 +170,11 @@ def evaluate_agent(
                     )
                 ep_optimal = _OPTIMAL_CACHE[cache_key]
 
+            # Closest-approach progress toward the goal (dense, always computed).
+            goal_polys = list(env.targets)
+            initial_goal_dist = _goal_distance(env, goal_polys)
+            min_goal_dist = initial_goal_dist
+
             path = [(env.x, env.y)]
             actions = []
             total_reward = 0.0
@@ -173,9 +188,17 @@ def evaluate_agent(
                 total_reward += reward
                 n_steps += 1
                 path.append((env.x, env.y))
+                min_goal_dist = min(min_goal_dist, _goal_distance(env, goal_polys))
                 if terminated:
                     reached = True
                     break
+
+            # 1 - normalized distance to goal: 1 = reached, 0 = no progress made.
+            if reached or initial_goal_dist <= 1e-9:
+                progress = 1.0
+            else:
+                progress = max(0.0, 1.0 - min_goal_dist / initial_goal_dist)
+            goal_progress_list.append(progress)
 
             successes.append(1.0 if reached else 0.0)
             steps_list.append(n_steps)
@@ -210,12 +233,15 @@ def evaluate_agent(
         # Mean ratio of actual to optimal steps over *successful* episodes:
         # 1.0 = optimal, 1.01 = 1% more steps than the approximate optimal.
         "eval_avg_step_ratio": (float(np.mean(step_ratios)) if step_ratios else None),
+        # Mean closest-approach progress to the goal: 1 - min_dist/initial_dist.
+        "eval_avg_goal_progress": float(np.mean(goal_progress_list)) if goal_progress_list else 0.0,
         "eval_steps_per_episode": steps_list,
         "eval_success_per_episode": [int(s) for s in successes],
         "eval_reward_per_episode": rewards,
         "eval_failed_moves_per_episode": failed_moves_list,
         "eval_optimal_per_episode": optimals,
         "eval_step_ratio_per_episode": step_ratio_per_episode,
+        "eval_goal_progress_per_episode": goal_progress_list,
     }
 
     if last_env is not None:

@@ -10,6 +10,7 @@ from agents.DQN_agent import DQNAgent
 from world.environment_continuous import EnvironmentContinuous
 import random
 import os
+from math import radians
 
 def set_all_seeds(seed: int):
     random.seed(seed)
@@ -41,17 +42,35 @@ def train_DQN(
     agent_start_pos: tuple[int, int] | None = None,
     no_gui: bool = True,
     device: str | None = None,
+    reward: str = "default",          # "default" or "high"
+    agent_radius: float = 0.5,        # env dynamics (must match evaluation!)
+    move_distance: float = 0.2,
+    turn_angle_deg: float = 15.0,
+    hidden_sizes: tuple[int, ...] = (64, 128, 64),  # DQN network widths
+    train_start_mode: str = "fixed",  # "fixed" (use agent_start_pos) or "random"
 ) -> tuple[DQNAgent, list[dict[str, Any]]]:
-    
+
     grid = Path(grid)
     set_all_seeds(random_seed)
 
+    reward_fn = {
+        "default": EnvironmentContinuous._default_reward_function,
+        "high": EnvironmentContinuous._high_reward_function,
+    }[reward]
+
+    # "random" -> agent_start_pos=None makes the env sample a random empty cell
+    # each reset (curriculum of starts); "fixed" keeps the given start cell.
+    train_env_start = None if train_start_mode == "random" else agent_start_pos
     env = EnvironmentContinuous(
         grid_fp= grid,
         no_gui= no_gui,
         sigma= sigma,
-        agent_start_pos= agent_start_pos,
-        random_seed= random_seed
+        agent_start_pos= train_env_start,
+        random_seed= random_seed,
+        reward_fn= reward_fn,
+        agent_radius= agent_radius,
+        move_distance= move_distance,
+        turn_angle= radians(turn_angle_deg),
         )
     
     agent = DQNAgent(
@@ -64,6 +83,7 @@ def train_DQN(
         batch_size= batch_size,
         replay_buffer_size= replay_buffer_size,
         target_update_frequency= target_update_frequency,
+        hidden_sizes= hidden_sizes,
         device= device,
     )
 
@@ -140,6 +160,8 @@ def evaluate_DQN(
     episodes: int = 100,  # multiple episodes for a more stable estimate
     reward_fn=None,
     optimal_steps: int = 25,  # SPL normalisation (25 = medium-grid optimum at step 0.5)
+    agent_radius: float = 0.5,        # env dynamics (must match training/PPO!)
+    turn_angle_deg: float = 15.0,
 ):
     """Greedy evaluation of a DQN agent via the shared `evaluate_agent`.
 
@@ -157,7 +179,9 @@ def evaluate_DQN(
         agent_start_pos=agent_start_pos,
         seed=random_seed,
         reward_fn=reward_fn,
+        agent_radius=agent_radius,
         move_distance=move_distance,
+        turn_angle_deg=turn_angle_deg,
         optimal_steps=optimal_steps,
     )
     return {

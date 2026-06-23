@@ -21,6 +21,7 @@ class DQNAgent(BaseAgent):
             batch_size = 64,
             replay_buffer_size = 10000,
             target_update_frequency = 1000,
+            hidden_sizes = (64, 128, 64),
             device = None
     ):
         super().__init__()
@@ -45,8 +46,9 @@ class DQNAgent(BaseAgent):
         self.previous_action = None
         self.training_step = 0
 
-        self.policy_network = DQNNetwork(input_dim, output_dim)
-        self.target_network = DQNNetwork(input_dim, output_dim)
+        self.hidden_sizes = tuple(hidden_sizes)
+        self.policy_network = DQNNetwork(input_dim, output_dim, self.hidden_sizes)
+        self.target_network = DQNNetwork(input_dim, output_dim, self.hidden_sizes)
         self.replay_buffer = []
 
         self.optimizer = optim.Adam(self.policy_network.parameters(), lr = self.learning_rate)
@@ -160,25 +162,21 @@ class DQNAgent(BaseAgent):
         self.previous_action = None
 
 class DQNNetwork(nn.Module):
-    
-    def __init__(self, input_dim, output_dim):
+
+    def __init__(self, input_dim, output_dim, hidden_sizes=(64, 128, 64)):
         super().__init__()
 
         self.input_dim = input_dim
         self.output_dim = output_dim
+        self.hidden_sizes = tuple(hidden_sizes)
 
-        self.network = nn.Sequential(
-            nn.Linear(self.input_dim, 64),
-            nn.LayerNorm(64),
-            nn.ReLU(),
-            nn.Linear(64, 128),
-            nn.LayerNorm(128),
-            nn.ReLU(),
-            nn.Linear(128, 64),
-            nn.LayerNorm(64),
-            nn.ReLU(),
-            nn.Linear(64, self.output_dim),
-        )
+        layers = []
+        prev = input_dim
+        for h in self.hidden_sizes:
+            layers += [nn.Linear(prev, h), nn.LayerNorm(h), nn.ReLU()]
+            prev = h
+        layers.append(nn.Linear(prev, output_dim))
+        self.network = nn.Sequential(*layers)
 
     def forward(self, x):
         return self.network(x)

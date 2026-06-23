@@ -169,7 +169,6 @@ def main():
         entropy_coef=args.entropy_coef,
         update_epochs=args.update_epochs,
         minibatch_size=args.minibatch_size,
-        replay_capacity=args.replay_capacity,
         rollout_steps=args.rollout_steps,
         hidden_sizes=hidden_sizes,
         reward_scale=args.reward_scale,

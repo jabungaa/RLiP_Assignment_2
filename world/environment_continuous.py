@@ -420,14 +420,15 @@ class EnvironmentContinuous:
     @staticmethod
     def _high_reward_function(collided: bool, target_reached: bool,
                                  moved: bool) -> float:
-        """High reward function: reach target (+10000), bump wall (-5), else step (-1)."""
+        """High reward function: reach target (+1000), bump wall (-5), move (-0.1), else step (-1)."""
         if target_reached:
             return 1000.0
         if collided:
             return -5.0
         if moved:
-            return 0.1
-        return -1.0
+            return -0.1
+        else:
+            return -1.0
     
     
 

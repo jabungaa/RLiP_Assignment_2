@@ -25,11 +25,14 @@ from tqdm import trange
 from agents.PPO import PPO_agent
 from world.environment_continuous import EnvironmentContinuous
 
-# Goal-reward magnitude of each reward function; used to auto-set reward_scale
-# so the agent trains on rewards of magnitude ~1.
+# Goal-reward magnitude of each reward function. Used to auto-set reward_scale
+# so the success reward becomes ~1 after the PPO agent divides every reward by
+# it -- this keeps the critic's value targets at order ~1 for stable training.
+# Each value MUST equal the goal reward returned by the matching reward fn in
+# EnvironmentContinuous, otherwise the normalisation is wrong.
 REWARD_SCALES = {
-    "default": 10.0,   # goal=10, step=-1, collision=-5
-    "high": 10.0,      # goal=100000, step=-1, collision=-5
+    "default": 1.0,      # _default_reward_function: goal=+1, collision=-0.25, step=-0.001/-0.01
+    "high": 1000.0,      # _high_reward_function:    goal=+1000, collision=-5, move=+0.1, step=-1
 }
 
 
@@ -295,12 +298,12 @@ def run_ppo(
     grid: str | Path,
     *,
     reward: str = "high",
-    sigma: float = 0.0,
+    sigma: float = 0.05,
     seed: int = 1,
     device: str = "cpu",
-    episodes: int = 1000,
+    episodes: int = 10000,
     iters: int = 1000,
-    train_start_mode: str = "random",
+    train_start_mode: str = "fixed",
     start_pos: tuple[int, int] | None = None,
     eval_episodes: int = 1,
     eval_max_steps: int = 1000,
@@ -368,7 +371,7 @@ def run_ppo(
         entropy_coef=entropy_coef,
         update_epochs=update_epochs,
         minibatch_size=minibatch_size,
-        replay_capacity=replay_capacity,
+        # PPO_agent is on-policy only now; replay_capacity is no longer a param.
         rollout_steps=rollout_steps,
         hidden_sizes=hidden_sizes,
         reward_scale=reward_scale,

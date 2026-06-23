@@ -248,7 +248,7 @@ if __name__ == "__main__":
 
     repo_root = Path(__file__).resolve().parents[1]
     grid_fp = Path(sys.argv[1]) if len(sys.argv) > 1 \
-        else repo_root / "grid_configs" / "restaurant_test.npy"
+        else repo_root / "grid_configs" / "restaurant_test2.npy"
     grid = GridContinuous.from_file(grid_fp)
     segs = grid.to_segments()
     print(f"[v2] {grid_fp.name} {grid.cells.shape}: {len(segs)} wall segments")

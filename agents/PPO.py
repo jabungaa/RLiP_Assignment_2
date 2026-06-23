@@ -123,8 +123,8 @@ class PPO_agent(BaseAgent):
             advantage_norm: Normalize advantages inside each rollout.
             reward_scale: All rewards are divided by this before storage, so
                 the critic sees targets of magnitude ~1. Set it to the goal
-                reward of the active reward function, e.g. 10 for `default`
-                or 10000 for `high`.
+                reward of the active reward function, e.g. 1 for `default`
+                or 1000 for `high`.
             max_grad_norm: Optional gradient norm clipping.
             state_size: Continuous environment state size. The environment
                 already normalizes the state, so this is just the raw count
