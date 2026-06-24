@@ -116,11 +116,13 @@ def train_DQN(
             state = next_state
             total_reward += reward
             step_count+=1
-            if terminated:
-                break
-            #save models at different stages of training for evaluation later and print progress every 10k steps
+            #print progress every 10k steps
             if step_count % 10000 == 0:
                 print(f"Step {step_count}/{max_steps_total}, Episode {episode}")
+            if terminated:
+                break
+            #save models at different stages of training for evaluation later
+            
             if short_train_agent is None and step_count >= short_train_steps_eval:
                 print(f"Store agent for evaluation at step {step_count}/{max_steps_total}:")
                 short_train_agent=copy.deepcopy(agent)
@@ -190,6 +192,9 @@ def evaluate_DQN(
         "total_reward": res["eval_avg_reward"],
         "avg_steps": res["eval_avg_steps"],
         "avg_failed_moves": res["eval_avg_failed_moves"],
+        "ci_successes": res["eval_success_rate_ci"],
+        "ci_spls":res["eval_avg_spls_ci"],
+        "ci_failed_moves":res["eval_avg_failed_moves_ci"]
     }
 
 

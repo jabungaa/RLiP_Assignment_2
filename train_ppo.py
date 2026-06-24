@@ -168,10 +168,10 @@ def train_ppo(agent, env, *, max_steps_total: int, max_steps_per_episode: int = 
                 path.append((env.x, env.y))
             total_reward += reward
             step_count += 1
+            if step_count % 10000 == 0:
+               print(f"Step {step_count}/{max_steps_total}, Episode {episode}")
             if terminated:
                 break
-            if step_count % 10000 == 0:
-                print(f"Step {step_count}/{max_steps_total}, Episode {episode}")
             if short_train_agent is None and short_train_steps_eval and step_count >= short_train_steps_eval:
                 short_train_agent = copy.deepcopy(agent)
             if mid_train_agent is None and mid_train_steps_eval and step_count >= mid_train_steps_eval:
@@ -261,6 +261,9 @@ def evaluate_ppo(
         "total_reward": res["eval_avg_reward"],
         "avg_steps": res["eval_avg_steps"],
         "avg_failed_moves": res["eval_avg_failed_moves"],
+        "ci_successes": res["eval_success_rate_ci"],
+        "ci_spls":res["eval_avg_spls_ci"],
+        "ci_failed_moves":res["eval_avg_failed_moves_ci"]
     }
 
 

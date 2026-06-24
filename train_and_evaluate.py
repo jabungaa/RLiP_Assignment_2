@@ -48,7 +48,7 @@ def parse_args():
     parser.add_argument("--eval_sigma", type=float, default=0.0, help="Environment stochasticity (evaluation).")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--start_pos", type=str, default=None, help="Agent start position as row,col.")
-    parser.add_argument("--no_gui", action="store_true", default=True,
+    parser.add_argument("--no_gui", action="store_true", default=False,
                     help="Disable GUI during training.")
     parser.add_argument("--eval_gui", action="store_true", default=False, help="Enable GUI during evaluation.")
     parser.add_argument("--results_dir", type=Path, default=Path("results"))
@@ -144,7 +144,7 @@ def training_convergence_plot(history: list[dict], agent_name: str,
     return out_path
 
 def path_quality_rates(agent, grid, start_pos, sigma, seed, episodes, max_steps,
-                       within=1.2, agent_radius=0.5, move_distance=0.2,
+                       within=1.2, agent_radius=0.2, move_distance=0.5,
                        turn_angle_deg=15.0):
     """Thin wrapper that asks the shared evaluator for the path-quality rates.
 
@@ -273,6 +273,9 @@ def main():
             "eval_avg_collisions":dqn_eval.get("avg_failed_moves", 0.0),
             "short_train_eval_spl": short_train_dqn_eval.get("SPL", 0.0),
             "mid_train_eval_spl": mid_train_dqn_eval.get("SPL", 0.0),
+            "ci_successes": dqn_eval.get("ci_successes"),
+            "ci_spls":dqn_eval.get("ci_spls"),
+            "ci_failed_moves":dqn_eval.get("ci_failed_moves")
         }
 
         # Redefine success as reaching within 20% of the optimal path length,
@@ -433,6 +436,9 @@ def main():
             "eval_avg_collisions": ppo_full_eval.get("avg_failed_moves", 0.0),
             "short_train_eval_spl": ppo_short_eval.get("SPL", 0.0),
             "mid_train_eval_spl": ppo_mid_eval.get("SPL", 0.0),
+            "ci_successes": ppo_full_eval.get("ci_successes"),
+            "ci_spls":ppo_full_eval.get("ci_spls"),
+            "ci_failed_moves":ppo_full_eval.get("ci_failed_moves")
         }
 
         # Redefine success as reaching within 20% of the optimal path length,

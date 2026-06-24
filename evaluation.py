@@ -259,7 +259,43 @@ def evaluate_agent(
         "eval_optimal_per_episode": optimals,
         "eval_step_ratio_per_episode": step_ratio_per_episode,
         "eval_goal_progress_per_episode": goal_progress_list,
+        "eval_success_rate_ci": (
+            (
+                float(np.mean(successes) - 1.96 * np.std(successes, ddof=1) / np.sqrt(len(successes))),
+                float(np.mean(successes) + 1.96 * np.std(successes, ddof=1) / np.sqrt(len(successes))),
+            ) if len(successes) > 1 else None
+        ),
+        "eval_avg_spls_ci": (
+            (
+                float(np.mean(spls) - 1.96 * np.std(spls, ddof=1) / np.sqrt(len(spls))),
+                float(np.mean(spls) + 1.96 * np.std(spls, ddof=1) / np.sqrt(len(spls))),
+            ) if len(spls) > 1 else None
+        ),
+        "eval_avg_failed_moves_ci": (
+            (
+                float(np.mean(failed_moves_list) - 1.96 * np.std(failed_moves_list, ddof=1) / np.sqrt(len(failed_moves_list))),
+                float(np.mean(failed_moves_list) + 1.96 * np.std(failed_moves_list, ddof=1) / np.sqrt(len(failed_moves_list))),
+            ) if len(failed_moves_list) > 1 else None
+        ),
     }
+    for key, src in [
+        ("spls", "eval_spls_per_episode"),
+        ("successes", "eval_success_per_episode"),
+        ("failed_moves", "eval_failed_moves_per_episode"),
+    ]:
+        values = np.asarray(result.get(src, []), dtype=float)
+
+        if len(values) > 1:
+            mean = np.mean(values)
+            sem = np.std(values, ddof=1) / np.sqrt(len(values))
+            result[f"{key}_95ci"] = (
+                mean - 1.96 * sem,
+                mean + 1.96 * sem,
+            )
+        elif len(values) == 1:
+            result[f"{key}_95ci"] = (values[0], values[0])
+        else:
+            result[f"{key}_95ci"] = None
 
     if last_env is not None:
         result["eval_final_pos"] = [round(float(last_env.x), 4), round(float(last_env.y), 4)]
