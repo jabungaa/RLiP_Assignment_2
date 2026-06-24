@@ -53,6 +53,9 @@ def parse_args():
     parser.add_argument("--eval_gui", action="store_true", default=False, help="Enable GUI during evaluation.")
     parser.add_argument("--results_dir", type=Path, default=Path("results"))
     parser.add_argument("--eval_episodes", type=int, default=1, help="Number of episodes for evaluation.")
+    parser.add_argument("--agent_radius", type=float, default=0.2, help="Agent radius for evaluation.")
+    parser.add_argument("--move_distance", type=float, default=0.5, help="Agent move distance for evaluation.")
+    parser.add_argument("--turn_angle_deg", type=float, default=15.0, help="Agent turn angle for evaluation.")
 
     # DQN Hyperparameters
     dqn = parser.add_argument_group("DQN")
@@ -203,9 +206,9 @@ def main():
             no_gui=args.no_gui,
             device=args.device,
             # Same dynamics as PPO for a fair head-to-head comparison.
-            agent_radius=0.2,
-            move_distance=0.5,
-            turn_angle_deg=15.0,
+            agent_radius=args.agent_radius,
+            move_distance=args.move_distance,
+            turn_angle_deg=args.turn_angle_deg,
         )
 
         training_convergence_plot(dqn_history, "DQN", args.results_dir, stamp, checking_window=50)
@@ -227,9 +230,9 @@ def main():
             agent_start_pos=start_pos,
             no_gui=True,
             episodes=args.eval_episodes,
-            agent_radius=0.2,
-            move_distance=0.5,
-            turn_angle_deg=15.0,
+            agent_radius=args.agent_radius,
+            move_distance=args.move_distance,
+            turn_angle_deg=args.turn_angle_deg,
             optimal_steps=baseline_steps,
         )
 
@@ -241,9 +244,9 @@ def main():
             agent_start_pos=start_pos,
             no_gui=True,
             episodes=args.eval_episodes,
-            agent_radius=0.2,
-            move_distance=0.5,
-            turn_angle_deg=15.0,
+            agent_radius=args.agent_radius,
+            move_distance=args.move_distance,
+            turn_angle_deg=args.turn_angle_deg,
             optimal_steps=baseline_steps,
         )
 
@@ -255,9 +258,9 @@ def main():
             agent_start_pos=start_pos,
             no_gui=True,
             episodes=args.eval_episodes,
-            agent_radius=0.2,
-            move_distance=0.5,
-            turn_angle_deg=15.0,
+            agent_radius=args.agent_radius,
+            move_distance=args.move_distance,
+            turn_angle_deg=args.turn_angle_deg,
             optimal_steps=baseline_steps,
         )
         
@@ -322,9 +325,9 @@ def main():
             agent_start_pos=start_pos,
             random_seed=args.seed,
             reward_fn=EnvironmentContinuous._default_reward_function,
-            agent_radius=0.2,
-            move_distance=0.5,
-            turn_angle=radians(15.0),
+            agent_radius=args.agent_radius,
+            move_distance=args.move_distance,
+            turn_angle=radians(args.turn_angle_deg),
         )
 
         # Best PPO config from the Bayesian search (trial 14).
@@ -382,12 +385,12 @@ def main():
             sigma=args.eval_sigma,
             agent_start_pos=start_pos,
             random_seed=args.seed,
-            move_distance=0.5,
+            move_distance=args.move_distance,
             episodes=args.eval_episodes,
             reward_fn=EnvironmentContinuous._default_reward_function,
             optimal_steps=baseline_steps,
-            agent_radius=0.2,
-            turn_angle_deg=15.0,
+            agent_radius=args.agent_radius,
+            turn_angle_deg=args.turn_angle_deg,
         )
 
         ppo_short_eval = evaluate_ppo(
@@ -397,12 +400,12 @@ def main():
             sigma=args.eval_sigma,
             agent_start_pos=start_pos,
             random_seed=args.seed,
-            move_distance=0.5,
+            move_distance=args.move_distance,
             episodes=args.eval_episodes,
             reward_fn=EnvironmentContinuous._default_reward_function,
             optimal_steps=baseline_steps,
-            agent_radius=0.2,
-            turn_angle_deg=15.0,
+            agent_radius=args.agent_radius,
+            turn_angle_deg=args.turn_angle_deg,
         )
 
         ppo_mid_eval = evaluate_ppo(
@@ -412,12 +415,12 @@ def main():
             sigma=args.eval_sigma,
             agent_start_pos=start_pos,
             random_seed=args.seed,
-            move_distance=0.5,
+            move_distance=args.move_distance,
             episodes=args.eval_episodes,
             reward_fn=EnvironmentContinuous._default_reward_function,
             optimal_steps=baseline_steps,
-            agent_radius=0.2,
-            turn_angle_deg=15.0,
+            agent_radius=args.agent_radius,
+            turn_angle_deg=args.turn_angle_deg,
         )
 
         # Map PPO keys to standardized metrics keys
