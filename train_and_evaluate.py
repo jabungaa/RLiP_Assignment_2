@@ -101,8 +101,8 @@ def print_comparison(results: dict):
     
     metrics = [
         ("train_success_rate", "Train Success Rate"),
-        ("eval_success_rate", "Eval Success (<=1.2 opt)"),
-        ("optimal_rate", "Optimal Rate"),
+        ("eval_success_rate", "Target Reached Rate"),
+        ("eval_within_threshold_rate", "Eval Within Threshold Rate"),
         ("eval_total_reward", "Eval Reward"),
         ("eval_steps", "Eval Steps"),
         ("eval_spl", "Eval SPL"),
@@ -142,25 +142,6 @@ def training_convergence_plot(history: list[dict], agent_name: str,
     plt.close(fig)
     print(f"Convergence plot saved to {out_path}")
     return out_path
-
-def path_quality_rates(agent, grid, start_pos, sigma, seed, episodes, max_steps,
-                       within=1.2, agent_radius=0.2, move_distance=0.5,
-                       turn_angle_deg=15.0):
-    """Thin wrapper that asks the shared evaluator for the path-quality rates.
-
-    success_rate = reach within `within` x the approximate optimal path length
-    (default 1.2 = 20%); optimal_rate = reach in <= optimal. The thresholding
-    itself lives in `evaluation.evaluate_agent`.
-    """
-    from evaluation import evaluate_agent
-    res = evaluate_agent(
-        agent, grid, episodes=episodes, max_steps=max_steps, sigma=sigma,
-        agent_start_pos=start_pos, seed=seed, agent_radius=agent_radius,
-        move_distance=move_distance, turn_angle_deg=turn_angle_deg,
-        compute_spl=True, success_ratio_threshold=within,
-    )
-    return (res["eval_within_threshold_rate"] or 0.0,
-            res["eval_optimal_rate"] or 0.0)
 
 
 def main():
@@ -269,6 +250,7 @@ def main():
             "eval_total_reward": dqn_eval.get("total_reward", 0.0),
             "eval_steps": dqn_eval.get("avg_steps", 0.0),
             "eval_success_rate": dqn_eval.get("eval_success_rate", 0.0),
+            "eval_within_threshold_rate": dqn_eval.get("eval_within_threshold_rate", 0.0),
             "eval_spl": dqn_eval.get("SPL", 0.0),
             "eval_avg_collisions":dqn_eval.get("avg_failed_moves", 0.0),
             "short_train_eval_spl": short_train_dqn_eval.get("SPL", 0.0),
@@ -277,15 +259,6 @@ def main():
             "ci_spls":dqn_eval.get("ci_spls"),
             "ci_failed_moves":dqn_eval.get("ci_failed_moves")
         }
-
-        # Redefine success as reaching within 20% of the optimal path length,
-        # and report the rate of achieving the optimal path length.
-        dqn_success_rate, dqn_optimal_rate = path_quality_rates(
-            dqn_agent, args.grid, start_pos, args.eval_sigma, args.seed,
-            args.eval_episodes, args.dqn_max_steps_per_episode,
-            agent_radius=args.agent_radius, move_distance=args.move_distance, turn_angle_deg=args.turn_angle_deg)
-        dqn_eval_metrics["eval_success_rate"] = dqn_success_rate
-        dqn_eval_metrics["optimal_rate"] = dqn_optimal_rate
 
         # Collect data points
         steps = [args.dqn_short_train, args.dqn_mid_train, args.dqn_max_steps_total]
@@ -432,6 +405,7 @@ def main():
             "eval_total_reward": ppo_full_eval.get("total_reward", 0.0),
             "eval_steps": ppo_full_eval.get("avg_steps", 0.0),
             "eval_success_rate": ppo_full_eval.get("eval_success_rate", 0.0),
+            "eval_within_threshold_rate": ppo_full_eval.get("eval_within_threshold_rate", 0.0),
             "eval_spl": ppo_full_eval.get("SPL", 0.0),
             "eval_avg_collisions": ppo_full_eval.get("avg_failed_moves", 0.0),
             "short_train_eval_spl": ppo_short_eval.get("SPL", 0.0),
@@ -440,15 +414,6 @@ def main():
             "ci_spls":ppo_full_eval.get("ci_spls"),
             "ci_failed_moves":ppo_full_eval.get("ci_failed_moves")
         }
-
-        # Redefine success as reaching within 20% of the optimal path length,
-        # and report the rate of achieving the optimal path length.
-        ppo_success_rate, ppo_optimal_rate = path_quality_rates(
-            ppo_full_train_agent, args.grid, start_pos, args.eval_sigma, args.seed,
-            args.eval_episodes, args.ppo_eval_steps, 
-            agent_radius=args.agent_radius, move_distance=args.move_distance, turn_angle_deg=args.turn_angle_deg)
-        ppo_eval_metrics["eval_success_rate"] = ppo_success_rate
-        ppo_eval_metrics["optimal_rate"] = ppo_optimal_rate
 
         # Collect data points
         ppo_steps = [args.ppo_short_train, args.ppo_mid_train, args.ppo_max_steps_total]
