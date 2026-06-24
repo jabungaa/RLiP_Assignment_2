@@ -1,3 +1,43 @@
+# RL in practice Assignment 2
+
+This repository contains the code for assignment 2 of 2AMC15 Reinfocement learning in practice. The project models a continuous navigation task in a restaurant using a DQN agent and PPO agent.
+
+## Installation
+
+If you want to test the results the required libraries are found in requirements.txt. These can be installed using the following command
+
+pip install -r requirements.txt
+
+## Training and Evaluation
+
+run the following command from the repository root to reproce the experiment that was used to find the results from the report.
+
+```bash
+python train_and_evaluate.py --grid grid_configs/restaurant_medium.npy --agents both --eval_sigma 0.1 --seed 43 --start_pos 18,10 --ppo_max_steps_total 400000 --ppo_short_train 100000 --ppo_mid_train 200000 --ppo_eval_steps 2000 --ppo_max_steps_per_episode 2000 --device cpu --dqn_max_steps_total 400000 --dqn_short_train 100000 --dqn_mid_train 200000 --dqn_max_steps_per_episode 2000 --eval_episodes 30 --no_gui
+```
+
+## Outputs
+
+The script exports its output to the results folder. These outputs include:
+
+- `combined_results_<timestamp>.json`: final metrics for the selected agents.
+- `<timestamp>_DQN_convergence.png`: DQN training convergence plot.
+- `<timestamp>_PPO_convergence.png`: PPO training convergence plot.
+- `<timestamp>_auc_plot.png`: SPL-vs-training-steps comparison plot.
+
+## Metrics
+
+The main comparison uses:
+
+- Training success rate.
+- Evaluation success rate.
+- Optimal-path rate.
+- SPL (Success weighted by Path Length).
+- Average number of failed moves/collisions.
+- AUC over SPL at short, mid, and full training budgets.
+
+DELETE THIS AND BELOW WHEN DONE 
+
 This is the code I used to run it:
 python train_and_evaluate.py --grid grid_configs/restaurant_medium.npy --agents both --eval_sigma 0.1 --seed 43 --start_pos 18,10 --ppo_max_steps_total 400000 --ppo_short_train 100000 --ppo_mid_train 200000 --ppo_eval_steps 2000 --ppo_max_steps_per_episode 2000 --device cpu --dqn_max_steps_total 400000 --dqn_short_train 100000 --dqn_mid_train 200000 --dqn_max_steps_per_episode 2000 --eval_episodes 30 --no_gui 
 
