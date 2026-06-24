@@ -10,10 +10,11 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.integrate import trapezoid
 
-# Pipeline imports
+# Pipeline imports. PPO training and evaluation both live in train_ppo.py now
+# (step-budgeted train_ppo + evaluation.py-based evaluate_ppo), consistent with
+# the DQN pipeline. train_ppo_functions is no longer used.
 from train_dqn import train_DQN, evaluate_DQN
-# from test_ppo import train_ppo, evaluate_ppo
-from train_ppo_functions import train_ppo, evaluate_ppo
+from train_ppo import train_ppo, evaluate_ppo, make_training_start_sampler
 
 # PPO-specific imports needed for instantiation
 from agents.PPO import PPO_agent
@@ -41,7 +42,7 @@ def parse_args():
 
     # Shared configurations
     parser.add_argument("--grid", type=Path, default=Path("grid_configs/restaurant_test.npy"), help="Path to the .npy grid file.")
-    parser.add_argument("--agents", choices=("dqn", "ppo", "both"), default="ppo", help="Which agent(s) to run.")
+    parser.add_argument("--agents", choices=("dqn", "ppo", "both"), default="both", help="Which agent(s) to run.")
     parser.add_argument("--ppo_sigma", type=float, default=0.05, help="Environment stochasticity (training).")
     parser.add_argument("--dqn_sigma", type=float, default=0.1, help="Environment stochasticity (training).")
     parser.add_argument("--eval_sigma", type=float, default=0.0, help="Environment stochasticity (evaluation).")
@@ -56,25 +57,25 @@ def parse_args():
     # DQN Hyperparameters
     dqn = parser.add_argument_group("DQN")
     dqn.add_argument("--dqn_episodes", type=int, default=5)
-    dqn.add_argument("--dqn_max_steps_total", type=int, default=200000)
-    dqn.add_argument("--dqn_short_train", type=int, default=50000)
-    dqn.add_argument("--dqn_mid_train", type=int, default=100000)
-    dqn.add_argument("--dqn_max_steps_per_episode", type=int, default=50)
+    dqn.add_argument("--dqn_max_steps_total", type=int, default=100)
+    dqn.add_argument("--dqn_short_train", type=int, default=25)
+    dqn.add_argument("--dqn_mid_train", type=int, default=50)
+    dqn.add_argument("--dqn_max_steps_per_episode", type=int, default=1)
     dqn.add_argument("--dqn_lr", type=float, default=0.001)
     dqn.add_argument("--dqn_gamma", type=float, default=0.99)
 
     # PPO Hyperparameters
     ppo = parser.add_argument_group("PPO")
     # ppo.add_argument("--ppo_episodes", type=int, default=5)
-    ppo.add_argument("--ppo_max_steps_total", type=int, default=200000)
-    ppo.add_argument("--ppo_short_train", type=int, default=50000)
-    ppo.add_argument("--ppo_mid_train", type=int, default=100000)
-    ppo.add_argument("--ppo_max_steps_per_episode", type=int, default=300)
+    ppo.add_argument("--ppo_max_steps_total", type=int, default=100)
+    ppo.add_argument("--ppo_short_train", type=int, default=25)
+    ppo.add_argument("--ppo_mid_train", type=int, default=50)
+    ppo.add_argument("--ppo_max_steps_per_episode", type=int, default=1)
     ppo.add_argument("--ppo_eval_steps", type=int, default=200)
     ppo.add_argument("--ppo_policy_lr", type=float, default=3e-4)
     ppo.add_argument("--ppo_value_lr", type=float, default=1e-3)
     
-    parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--device", type=str, default="cpu")
     return parser.parse_args()
 
 def parse_start_pos(raw: str | None, grid_fp: Path) -> tuple[int, int] | None:
@@ -90,14 +91,15 @@ def parse_start_pos(raw: str | None, grid_fp: Path) -> tuple[int, int] | None:
     return (1, 1)
 
 def print_comparison(results: dict):
-    print(f"\n{'─'*60}\n  Summary — Training & Evaluation\n{'─'*60}")
+    print(f"\n{'-'*60}\n  Summary - Training & Evaluation\n{'-'*60}")
     agents = list(results.keys())
     print(f"  {'Metric':<25}" + "".join(f"{a.upper():>15}" for a in agents))
-    print("  " + "─" * (25 + 15 * len(agents)))
+    print("  " + "-" * (25 + 15 * len(agents)))
     
     metrics = [
         ("train_success_rate", "Train Success Rate"),
-        ("eval_success_rate", "Eval Success Rate"),
+        ("eval_success_rate", "Eval Success (<=1.2 opt)"),
+        ("optimal_rate", "Optimal Rate"),
         ("eval_total_reward", "Eval Reward"),
         ("eval_steps", "Eval Steps"),
         ("eval_spl", "Eval SPL"),
@@ -138,6 +140,26 @@ def training_convergence_plot(history: list[dict], agent_name: str,
     print(f"Convergence plot saved to {out_path}")
     return out_path
 
+def path_quality_rates(agent, grid, start_pos, sigma, seed, episodes, max_steps,
+                       within=1.2, agent_radius=0.5, move_distance=0.2,
+                       turn_angle_deg=15.0):
+    """Thin wrapper that asks the shared evaluator for the path-quality rates.
+
+    success_rate = reach within `within` x the approximate optimal path length
+    (default 1.2 = 20%); optimal_rate = reach in <= optimal. The thresholding
+    itself lives in `evaluation.evaluate_agent`.
+    """
+    from evaluation import evaluate_agent
+    res = evaluate_agent(
+        agent, grid, episodes=episodes, max_steps=max_steps, sigma=sigma,
+        agent_start_pos=start_pos, seed=seed, agent_radius=agent_radius,
+        move_distance=move_distance, turn_angle_deg=turn_angle_deg,
+        compute_spl=True, success_ratio_threshold=within,
+    )
+    return (res["eval_within_threshold_rate"] or 0.0,
+            res["eval_optimal_rate"] or 0.0)
+
+
 def main():
     print("ENTERED MAIN")
     args = parse_args()
@@ -149,8 +171,17 @@ def main():
     args.results_dir.mkdir(parents=True, exist_ok=True)
     start_pos = parse_start_pos(args.start_pos, args.grid)
 
+    # Approximate optimal step count from the (fixed) comparison start, used as
+    # the SPL baseline for BOTH agents so their SPL/AUC are directly comparable.
+    from optimal_path import approx_optimal_for_grid
+    baseline_steps = approx_optimal_for_grid(
+        args.grid, start_pos, agent_radius=0.5, move_distance=0.2, turn_angle_deg=15.0)
+    print(f"SPL baseline (approx optimal from {start_pos}): {baseline_steps} steps")
+
     all_results = {}
     print("agents =", args.agents)
+    
+    print("device =", args.device)
 
     # ── DQN Pipeline ────
     if args.agents in ("dqn", "both"):
@@ -199,7 +230,7 @@ def main():
             agent_radius=0.2,
             move_distance=0.5,
             turn_angle_deg=15.0,
-            optimal_steps=23
+            optimal_steps=baseline_steps,
         )
 
         mid_train_dqn_eval = evaluate_DQN(
@@ -213,7 +244,7 @@ def main():
             agent_radius=0.2,
             move_distance=0.5,
             turn_angle_deg=15.0,
-            optimal_steps=23
+            optimal_steps=baseline_steps,
         )
 
         dqn_eval = evaluate_DQN(
@@ -227,7 +258,7 @@ def main():
             agent_radius=0.2,
             move_distance=0.5,
             turn_angle_deg=15.0,
-            optimal_steps=23
+            optimal_steps=baseline_steps,
         )
         
         # Map DQN keys to standardized metrics keys
@@ -240,6 +271,14 @@ def main():
             "short_train_eval_spl": short_train_dqn_eval.get("SPL", 0.0),
             "mid_train_eval_spl": mid_train_dqn_eval.get("SPL", 0.0),
         }
+
+        # Redefine success as reaching within 20% of the optimal path length,
+        # and report the rate of achieving the optimal path length.
+        dqn_success_rate, dqn_optimal_rate = path_quality_rates(
+            dqn_agent, args.grid, start_pos, args.eval_sigma, args.seed,
+            args.eval_episodes, args.dqn_max_steps_per_episode)
+        dqn_eval_metrics["eval_success_rate"] = dqn_success_rate
+        dqn_eval_metrics["optimal_rate"] = dqn_optimal_rate
 
         # Collect data points
         steps = [args.dqn_short_train, args.dqn_mid_train, args.dqn_max_steps_total]
@@ -310,7 +349,11 @@ def main():
             device=args.device,
         )
 
-        # Run PPO training
+        # Run PPO training with random starts (curriculum) -- same as how it was
+        # tuned; evaluation is still from the fixed start_pos. Matches the DQN
+        # training-start distribution for a fair comparison.
+        # ppo_start_sampler = make_training_start_sampler(
+        #     args.grid, start_pos, mode="random", seed=args.seed)
         ppo_full_train_agent, ppo_history, ppo_short_train_agent, ppo_mid_train_agent = train_ppo(
             agent=ppo_agent,
             env=env,
@@ -320,7 +363,6 @@ def main():
             max_steps_per_episode=args.ppo_max_steps_per_episode,
             start_pos=start_pos,
             seed=args.seed
-            # repeat_visit_penalty=0.0
         )
         
         training_convergence_plot(ppo_history, "PPO", args.results_dir, stamp, checking_window=50)
@@ -335,50 +377,47 @@ def main():
         # Run PPO evaluation and gather results
         ppo_full_eval = evaluate_ppo(
             agent=ppo_full_train_agent,
-            Environment=EnvironmentContinuous, 
-            grid_fp=args.grid,
-            reward_fn=EnvironmentContinuous._default_reward_function,
-            start_pos=start_pos,
+            grid=args.grid,
+            max_steps_per_episode=args.ppo_eval_steps,
             sigma=args.eval_sigma,
-            seed=args.seed,
+            agent_start_pos=start_pos,
+            random_seed=args.seed,
+            move_distance=0.2,
             episodes=args.eval_episodes,
-            max_steps=args.ppo_eval_steps,
-            agent_radius=0.2,
-            move_distance=0.5,
+            reward_fn=EnvironmentContinuous._default_reward_function,
+            optimal_steps=baseline_steps,
+            agent_radius=0.5,
             turn_angle_deg=15.0,
-            optimal_steps=23
         )
 
         ppo_short_eval = evaluate_ppo(
             agent=ppo_short_train_agent,
-            Environment=EnvironmentContinuous, 
-            grid_fp=args.grid,
-            reward_fn=EnvironmentContinuous._default_reward_function,
-            start_pos=start_pos,
+            grid=args.grid,
+            max_steps_per_episode=args.ppo_eval_steps,
             sigma=args.eval_sigma,
-            seed=args.seed,
+            agent_start_pos=start_pos,
+            random_seed=args.seed,
+            move_distance=0.2,
             episodes=args.eval_episodes,
-            max_steps=args.ppo_eval_steps,
-            agent_radius=0.2,
-            move_distance=0.5,
+            reward_fn=EnvironmentContinuous._default_reward_function,
+            optimal_steps=baseline_steps,
+            agent_radius=0.5,
             turn_angle_deg=15.0,
-            optimal_steps=23
         )
 
         ppo_mid_eval = evaluate_ppo(
             agent=ppo_mid_train_agent,
-            Environment=EnvironmentContinuous, 
-            grid_fp=args.grid,
-            reward_fn=EnvironmentContinuous._default_reward_function,
-            start_pos=start_pos,
+            grid=args.grid,
+            max_steps_per_episode=args.ppo_eval_steps,
             sigma=args.eval_sigma,
-            seed=args.seed,
+            agent_start_pos=start_pos,
+            random_seed=args.seed,
+            move_distance=0.2,
             episodes=args.eval_episodes,
-            max_steps=args.ppo_eval_steps,
-            agent_radius=0.2,
-            move_distance=0.5,
+            reward_fn=EnvironmentContinuous._default_reward_function,
+            optimal_steps=baseline_steps,
+            agent_radius=0.5,
             turn_angle_deg=15.0,
-            optimal_steps=23
         )
 
         # Map PPO keys to standardized metrics keys
@@ -387,11 +426,19 @@ def main():
             "eval_steps": ppo_full_eval.get("avg_steps", 0.0),
             "eval_success_rate": ppo_full_eval.get("eval_success_rate", 0.0),
             "eval_spl": ppo_full_eval.get("SPL", 0.0),
-            "eval_avg_collisions":ppo_full_eval.get("avg_failed_moves", 0.0), 
+            "eval_avg_collisions": ppo_full_eval.get("avg_failed_moves", 0.0),
             "short_train_eval_spl": ppo_short_eval.get("SPL", 0.0),
             "mid_train_eval_spl": ppo_mid_eval.get("SPL", 0.0),
         }
-        
+
+        # Redefine success as reaching within 20% of the optimal path length,
+        # and report the rate of achieving the optimal path length.
+        ppo_success_rate, ppo_optimal_rate = path_quality_rates(
+            ppo_full_train_agent, args.grid, start_pos, args.eval_sigma, args.seed,
+            args.eval_episodes, args.ppo_eval_steps)
+        ppo_eval_metrics["eval_success_rate"] = ppo_success_rate
+        ppo_eval_metrics["optimal_rate"] = ppo_optimal_rate
+
         # Collect data points
         ppo_steps = [args.ppo_short_train, args.ppo_mid_train, args.ppo_max_steps_total]
         ppo_spls  = [
@@ -410,6 +457,17 @@ def main():
         ppo_auc = trapezoid(ppo_spls, ppo_steps)
 
         all_results["ppo"] = {**ppo_metrics, **ppo_eval_metrics, "agent": "PPO", "auc": ppo_auc}
+        
+        # save path image
+        EnvironmentContinuous.evaluate_agent(
+            grid_fp=args.grid,
+            agent=ppo_agent,
+            max_steps=args.ppo_max_steps_per_episode,
+            sigma=args.eval_sigma,
+            agent_start_pos=start_pos,
+            random_seed=args.seed,
+            no_gui=args.no_gui
+        )
 
         
     # Plot SPL vs #iterations to learn AUC

@@ -91,6 +91,7 @@ def evaluate_agent(
     compute_spl: bool = False,
     spl_pos_res: float = 0.1,
     spl_free_initial_heading: bool = True,
+    success_ratio_threshold: float = 1.2,
     save_image: bool = False,
 ) -> dict:
     """Runs a greedy evaluation of `agent` and returns standardized metrics.
@@ -221,10 +222,25 @@ def evaluate_agent(
         _exit_eval_mode(agent, saved)
 
     n_success = int(sum(successes))
+    n_eps = len(step_ratio_per_episode)
+    # Path-quality rates (need an optimal reference, i.e. compute_spl or
+    # optimal_steps). within_threshold_rate: reached AND steps <= threshold x
+    # optimal (default 1.2 = within 20%). optimal_rate: reached AND steps <=
+    # optimal. None when no optimal was available.
+    if optimals:
+        within_rate = sum(1 for r in step_ratio_per_episode
+                          if r is not None and r <= success_ratio_threshold) / n_eps
+        optimal_rate = sum(1 for r in step_ratio_per_episode
+                           if r is not None and r <= 1.0) / n_eps
+    else:
+        within_rate = optimal_rate = None
     result = {
         "eval_episodes": int(episodes),
         "eval_successes": n_success,
         "eval_success_rate": float(np.mean(successes)) if successes else 0.0,
+        "eval_within_threshold_rate": within_rate,
+        "eval_optimal_rate": optimal_rate,
+        "eval_success_ratio_threshold": success_ratio_threshold,
         "eval_avg_steps": float(np.mean(steps_list)) if steps_list else 0.0,
         "eval_avg_reward": float(np.mean(rewards)) if rewards else 0.0,
         "eval_total_reward": float(np.sum(rewards)) if rewards else 0.0,

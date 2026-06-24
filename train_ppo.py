@@ -15,6 +15,7 @@ The `test_ppo.py` CLI imports these functions instead of redefining them.
 
 from __future__ import annotations
 
+import copy
 from datetime import datetime
 from math import radians
 from pathlib import Path
@@ -90,204 +91,161 @@ def make_training_start_sampler(grid_fp: Path, fixed_start: tuple[int, int],
 # --------------------------------------------------------------------------- #
 # Training / evaluation
 # --------------------------------------------------------------------------- #
-def train_ppo(agent, env, episodes: int, iters: int, start_sampler,
-              train_images_dir=None, greedy_eval_interval=0, greedy_eval_fn=None):
-    """Runs the PPO training loop and returns training success metrics."""
-    agent.set_training(True)
-    successes = []
-    consecutive_successes = 0
-    next_save_threshold = 20  # first doubling checkpoint after 10
-    early_stopped = False
-    evaluation_history = []
+def ppo_train_metrics(history: list[dict]) -> dict:
+    """Aggregates per-episode training history into success-rate metrics.
 
-    for episode in trange(episodes, desc="Training PPO"):
-        state = env.reset(agent_start_pos=start_sampler())
+    Mirrors the metrics produced for the DQN training history.
+    """
+    successes = [1 if ep["terminated"] else 0 for ep in history]
+    n = len(successes)
+    last_100 = successes[-100:]
+    total = int(sum(successes))
+    return {
+        "train_total_successes": total,
+        "train_total_episodes": n,
+        "train_success_rate": float(total / n) if n else 0.0,
+        "train_successes_last_100": int(sum(last_100)),
+        "train_success_rate_last_100": float(np.mean(last_100)) if last_100 else 0.0,
+    }
+
+
+def train_ppo(agent, env, *, max_steps_total: int, max_steps_per_episode: int = 1000,
+              short_train_steps_eval: int | None = None,
+              mid_train_steps_eval: int | None = None,
+              start_pos: tuple[int, int] | None = None, start_sampler=None,
+              train_images_dir=None, greedy_eval_interval=0, greedy_eval_fn=None,
+              seed: int = 0):
+    """Step-budgeted PPO training loop, consistent with `train_dqn.train_DQN`.
+
+    Trains until `max_steps_total` environment steps, snapshotting the agent at
+    the short/mid step thresholds (for sample-efficiency / AUC analysis). The
+    per-episode start cell comes from `start_sampler()` if given (random-start
+    curriculum), else the fixed `start_pos`, else the environment default.
+
+    Returns:
+        (agent, training_history, short_train_agent, mid_train_agent) -- the
+        same 4-tuple shape `train_DQN` returns.
+    """
+    agent.set_training(True)
+    training_history = []
+    step_count = 0
+    short_train_agent = None
+    mid_train_agent = None
+    consecutive_successes = 0
+    next_save_threshold = 20
+    episode = 0
+    print(f"Training PPO agent for a maximum of {max_steps_total} steps...")
+
+    while step_count < max_steps_total:
+        start = start_sampler() if start_sampler is not None else start_pos
+        state = env.reset(agent_start_pos=start)
         agent.new_episode(state)
 
-        reached = False
+        terminated = False
+        total_reward = 0.0
         path = [(env.x, env.y)] if train_images_dir is not None else None
 
-        for _ in range(iters):
+        for step in range(max_steps_per_episode):
             action = agent.take_action(state)
             state, reward, terminated, info = env.step(action)
-
             agent.update(state, reward, info["actual_action"], terminated)
-
             if path is not None:
                 path.append((env.x, env.y))
+            total_reward += reward
+            step_count += 1
             if terminated:
-                reached = True
+                break
+            if step_count % 10000 == 0:
+                print(f"Step {step_count}/{max_steps_total}, Episode {episode}")
+            if short_train_agent is None and short_train_steps_eval and step_count >= short_train_steps_eval:
+                short_train_agent = copy.deepcopy(agent)
+            if mid_train_agent is None and mid_train_steps_eval and step_count >= mid_train_steps_eval:
+                mid_train_agent = copy.deepcopy(agent)
+            if step_count >= max_steps_total:
                 break
         else:
+            # Episode truncated (no terminal): bootstrap the GAE chain.
             agent.finish_rollout(state)
 
-        successes.append(1 if reached else 0)
+        training_history.append({
+            "episode": episode,
+            "total_reward": total_reward,
+            "steps": step + 1,
+            "terminated": terminated,
+            "targets_reached": env.world_stats.get("total_targets_reached", 0),
+            "failed_moves": env.world_stats.get("total_failed_moves", 0),
+        })
 
-        if reached:
+        # Optional training trajectory images (doubling cadence on success).
+        if train_images_dir is not None and terminated and path is not None:
             consecutive_successes += 1
-            if train_images_dir is not None:
-                if consecutive_successes <= 10 or consecutive_successes >= next_save_threshold:
-                    img = env.trajectory_image(path)
-                    img.save(train_images_dir / f"episode_{episode:04d}.png")
-                    if consecutive_successes >= next_save_threshold:
-                        next_save_threshold *= 2
-        else:
+            if consecutive_successes <= 10 or consecutive_successes >= next_save_threshold:
+                env.trajectory_image(path).save(train_images_dir / f"episode_{episode:04d}.png")
+                if consecutive_successes >= next_save_threshold:
+                    next_save_threshold *= 2
+        elif train_images_dir is not None:
             consecutive_successes = 0
             next_save_threshold = 20
 
+        # Optional periodic greedy evaluation with early stop.
         if (greedy_eval_interval > 0 and greedy_eval_fn is not None
                 and (episode + 1) % greedy_eval_interval == 0):
             evaluation = greedy_eval_fn()
-            if isinstance(evaluation, dict):
-                evaluation = dict(evaluation)
-                should_stop = bool(evaluation.pop("stop_training", False))
-                evaluation["training_episode"] = episode + 1
-                evaluation_history.append(evaluation)
-            else:
-                should_stop = bool(evaluation)
+            should_stop = (bool(evaluation.get("stop_training", False))
+                           if isinstance(evaluation, dict) else bool(evaluation))
             if should_stop:
                 print(f"\n[Early stop] Evaluation criterion met at episode {episode + 1}.")
-                early_stopped = True
                 break
+
+        episode += 1
 
     agent.finish_rollout()
     agent.set_training(False)
-    total_successes = int(sum(successes))
-    actual_episodes = len(successes)
-    last_100 = successes[-100:] if successes else []
-    return {
-        "train_total_successes": total_successes,
-        "train_total_episodes": actual_episodes,
-        "train_early_stopped": early_stopped,
-        "train_success_rate": float(total_successes / actual_episodes) if actual_episodes > 0 else 0.0,
-        "train_successes_last_100": int(sum(last_100)),
-        "train_success_rate_last_100": float(np.mean(last_100)) if last_100 else 0.0,
-        "evaluation_history": evaluation_history,
-    }
+    return agent, training_history, short_train_agent, mid_train_agent
 
 
-def evaluate_ppo(agent, Environment, grid_fp, reward_fn, start_pos, sigma,
-                 seed, episodes, max_steps, agent_radius=0.2,
-                 move_distance=0.2, turn_angle_deg=15.0,
-                 baseline_steps=None, save_image=True):
-    """Greedy evaluation over `episodes` via the shared `evaluate_agent`.
+def evaluate_ppo(
+    agent,
+    grid: str | Path,
+    max_steps_per_episode: int = 1000,
+    sigma: float = 0.0,
+    agent_start_pos: tuple[int, int] | None = None,
+    no_gui: bool = True,
+    random_seed: int = 0,
+    move_distance: float = 0.2,
+    episodes: int = 100,
+    reward_fn=None,
+    optimal_steps: int | None = None,
+    agent_radius: float = 0.5,
+    turn_angle_deg: float = 15.0,
+):
+    """Greedy evaluation of a PPO agent via the shared `evaluate_agent`.
 
-    Identical evaluation procedure to the DQN agent; the result is remapped to
-    the legacy PPO key names for backward compatibility with existing callers.
-    `Environment` is accepted for signature compatibility but the shared
-    evaluator always uses `EnvironmentContinuous`.
+    Thin wrapper, identical in shape to `train_dqn.evaluate_DQN`: same procedure,
+    same parameters, same returned keys -- so the two agents are evaluated and
+    reported uniformly.
     """
     from evaluation import evaluate_agent
 
-    eval_kwargs = {
-        "sigma": sigma,
-        "agent_start_pos": start_pos,
-        "reward_fn": reward_fn,
-        "agent_radius": agent_radius,
-        "move_distance": move_distance,
-        "turn_angle_deg": turn_angle_deg,
-        "optimal_steps": baseline_steps,
-    }
-
-    # Stochastic checkpoint evaluations (the 100-run calls with no image) are
-    # fail-fast: every run must finish within 150% of the baseline, so once one
-    # misses that limit the batch cannot pass and training should resume.
-    fail_fast = (
-        sigma != 0 and episodes > 1 and baseline_steps is not None
-        and not save_image
+    res = evaluate_agent(
+        agent, grid,
+        episodes=episodes,
+        max_steps=max_steps_per_episode,
+        sigma=sigma,
+        agent_start_pos=agent_start_pos,
+        seed=random_seed,
+        reward_fn=reward_fn,
+        agent_radius=agent_radius,
+        move_distance=move_distance,
+        turn_angle_deg=turn_angle_deg,
+        optimal_steps=optimal_steps,
     )
-    if fail_fast:
-        threshold_steps = int(1.5 * baseline_steps)
-        batch_results = []
-        for ep in range(episodes):
-            episode_result = evaluate_agent(
-                agent, grid_fp,
-                episodes=1,
-                max_steps=min(max_steps, threshold_steps),
-                seed=seed + ep,
-                save_image=False,
-                **eval_kwargs,
-            )
-            batch_results.append(episode_result)
-            episode_success = episode_result["eval_success_per_episode"][0]
-            episode_steps = episode_result["eval_steps_per_episode"][0]
-            if not episode_success or episode_steps > threshold_steps:
-                break
-
-        successes = [
-            value
-            for result in batch_results
-            for value in result["eval_success_per_episode"]
-        ]
-        steps = [
-            value
-            for result in batch_results
-            for value in result["eval_steps_per_episode"]
-        ]
-        rewards = [
-            value
-            for result in batch_results
-            for value in result["eval_reward_per_episode"]
-        ]
-        last_result = batch_results[-1]
-        res = {
-            "eval_successes": int(sum(successes)),
-            "eval_episodes": len(successes),
-            "eval_success_rate": float(np.mean(successes)) if successes else 0.0,
-            "eval_avg_steps": float(np.mean(steps)) if steps else 0.0,
-            "eval_avg_reward": float(np.mean(rewards)) if rewards else 0.0,
-            "eval_steps_per_episode": steps,
-            "eval_success_per_episode": successes,
-            "eval_final_pos": last_result.get("eval_final_pos"),
-            "eval_path": last_result.get("eval_path"),
-        }
-    else:
-        res = evaluate_agent(
-            agent, grid_fp,
-            episodes=episodes,
-            max_steps=max_steps,
-            seed=seed,
-            save_image=save_image,
-            **eval_kwargs,
-        )
-    successes = res.get("eval_success_per_episode", [])
-    steps = res.get("eval_steps_per_episode", [])
-    successful_steps = [n for n, success in zip(steps, successes) if success]
-    within_limit = None
-    within_count = None
-    spl = None
-    if baseline_steps is not None:
-        limit = 1.5 * baseline_steps
-        within_count = sum(
-            1 for n, success in zip(steps, successes) if success and n <= limit
-        )
-        within_limit = within_count / episodes if episodes else 0.0
-
-        # Aggregate SPL requested by the CLI. For one greedy run this uses that
-        # run's step count; for 100 stochastic runs it uses their average. The
-        # success-rate factor gives failed evaluations zero contribution.
-        if steps:
-            spl = (res["eval_success_rate"] * baseline_steps
-                   / max(baseline_steps, res["eval_avg_steps"]))
-
     return {
-        "eval_total_successes": res["eval_successes"],
-        "eval_total_episodes": res["eval_episodes"],
         "eval_success_rate": res["eval_success_rate"],
-        "eval_avg_steps": res["eval_avg_steps"],
-        "eval_avg_reward": res["eval_avg_reward"],
-        "eval_baseline_steps": baseline_steps,
-        "eval_successful_avg_steps": (
-            float(np.mean(successful_steps)) if successful_steps else None
-        ),
-        "eval_within_150pct_baseline_count": within_count,
-        "eval_within_150pct_baseline_rate": within_limit,
-        "eval_spl": spl,
-        "eval_steps": res.get("eval_steps_per_episode", [0])[-1] if res.get("eval_steps_per_episode") else 0,
-        "eval_steps_per_episode": steps,
-        "eval_success_per_episode": successes,
-        "eval_final_pos": res.get("eval_final_pos"),
-        "eval_path": res.get("eval_path"),
+        "SPL": res["eval_avg_spl"] if res["eval_avg_spl"] is not None else 0.0,
+        "total_reward": res["eval_avg_reward"],
+        "avg_steps": res["eval_avg_steps"],
+        "avg_failed_moves": res["eval_avg_failed_moves"],
     }
 
 
@@ -383,21 +341,27 @@ def run_ppo(
         device=device,
     )
 
-    train_metrics = train_ppo(agent, env, episodes, iters, start_sampler)
-    metrics = dict(train_metrics)
+    # Episode budget -> step budget (max_steps_total = episodes x iters) for the
+    # step-budgeted trainer; random/fixed starts via the sampler.
+    agent, history, _short, _mid = train_ppo(
+        agent, env,
+        max_steps_total=episodes * iters,
+        max_steps_per_episode=iters,
+        start_sampler=start_sampler,
+        seed=seed,
+    )
+    metrics = ppo_train_metrics(history)
     if do_eval:
         eval_metrics = evaluate_ppo(
-            agent=agent,
-            Environment=EnvironmentContinuous,
-            grid_fp=grid,
-            reward_fn=reward_fn,
-            start_pos=start_pos,
+            agent, grid,
+            max_steps_per_episode=eval_max_steps,
             sigma=sigma,
-            seed=seed,
-            episodes=eval_episodes,
-            max_steps=eval_max_steps,
-            agent_radius=agent_radius,
+            agent_start_pos=start_pos,
+            random_seed=seed,
             move_distance=move_distance,
+            episodes=eval_episodes,
+            reward_fn=reward_fn,
+            agent_radius=agent_radius,
             turn_angle_deg=turn_angle_deg,
         )
         metrics.update(eval_metrics)

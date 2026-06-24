@@ -3,7 +3,6 @@ from pathlib import Path
 from world.grid import Grid
 from world.grid_continuous import GridContinuous
 from world.gui import GUI
-from world.environment import Environment
 from world.environment_continuous import EnvironmentContinuous
 
 
