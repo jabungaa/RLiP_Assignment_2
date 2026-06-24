@@ -48,8 +48,7 @@ def parse_args():
     parser.add_argument("--eval_sigma", type=float, default=0.0, help="Environment stochasticity (evaluation).")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--start_pos", type=str, default=None, help="Agent start position as row,col.")
-    parser.add_argument("--no_gui", action="store_true", default=False,
-                    help="Disable GUI during training.")
+    parser.add_argument("--no_gui", action="store_true", default=False, help="Disable GUI during training.")
     parser.add_argument("--eval_gui", action="store_true", default=False, help="Enable GUI during evaluation.")
     parser.add_argument("--results_dir", type=Path, default=Path("results"))
     parser.add_argument("--eval_episodes", type=int, default=1, help="Number of episodes for evaluation.")
@@ -59,22 +58,22 @@ def parse_args():
 
     # DQN Hyperparameters
     dqn = parser.add_argument_group("DQN")
-    dqn.add_argument("--dqn_episodes", type=int, default=5)
-    dqn.add_argument("--dqn_max_steps_total", type=int, default=100)
-    dqn.add_argument("--dqn_short_train", type=int, default=25)
-    dqn.add_argument("--dqn_mid_train", type=int, default=50)
-    dqn.add_argument("--dqn_max_steps_per_episode", type=int, default=1)
+    dqn.add_argument("--dqn_episodes", type=int, default=500, help="Number of episodes for epsilon decay schedule.")
+    dqn.add_argument("--dqn_max_steps_total", type=int, default=500000)
+    dqn.add_argument("--dqn_short_train", type=int, default=125000)
+    dqn.add_argument("--dqn_mid_train", type=int, default=250000)
+    dqn.add_argument("--dqn_max_steps_per_episode", type=int, default=2000)
     dqn.add_argument("--dqn_lr", type=float, default=0.001)
     dqn.add_argument("--dqn_gamma", type=float, default=0.99)
 
     # PPO Hyperparameters
     ppo = parser.add_argument_group("PPO")
     # ppo.add_argument("--ppo_episodes", type=int, default=5)
-    ppo.add_argument("--ppo_max_steps_total", type=int, default=100)
-    ppo.add_argument("--ppo_short_train", type=int, default=25)
-    ppo.add_argument("--ppo_mid_train", type=int, default=50)
+    ppo.add_argument("--ppo_max_steps_total", type=int, default=500000)
+    ppo.add_argument("--ppo_short_train", type=int, default=125000)
+    ppo.add_argument("--ppo_mid_train", type=int, default=250000)
     ppo.add_argument("--ppo_max_steps_per_episode", type=int, default=1)
-    ppo.add_argument("--ppo_eval_steps", type=int, default=200)
+    ppo.add_argument("--ppo_eval_steps", type=int, default=2000)
     ppo.add_argument("--ppo_policy_lr", type=float, default=3e-4)
     ppo.add_argument("--ppo_value_lr", type=float, default=1e-3)
     
