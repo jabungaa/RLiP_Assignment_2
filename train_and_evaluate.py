@@ -382,11 +382,11 @@ def main():
             sigma=args.eval_sigma,
             agent_start_pos=start_pos,
             random_seed=args.seed,
-            move_distance=0.2,
+            move_distance=0.5,
             episodes=args.eval_episodes,
             reward_fn=EnvironmentContinuous._default_reward_function,
             optimal_steps=baseline_steps,
-            agent_radius=0.5,
+            agent_radius=0.2,
             turn_angle_deg=15.0,
         )
 
@@ -397,11 +397,11 @@ def main():
             sigma=args.eval_sigma,
             agent_start_pos=start_pos,
             random_seed=args.seed,
-            move_distance=0.2,
+            move_distance=0.5,
             episodes=args.eval_episodes,
             reward_fn=EnvironmentContinuous._default_reward_function,
             optimal_steps=baseline_steps,
-            agent_radius=0.5,
+            agent_radius=0.2,
             turn_angle_deg=15.0,
         )
 
@@ -412,11 +412,11 @@ def main():
             sigma=args.eval_sigma,
             agent_start_pos=start_pos,
             random_seed=args.seed,
-            move_distance=0.2,
+            move_distance=0.5,
             episodes=args.eval_episodes,
             reward_fn=EnvironmentContinuous._default_reward_function,
             optimal_steps=baseline_steps,
-            agent_radius=0.5,
+            agent_radius=0.2,
             turn_angle_deg=15.0,
         )
 

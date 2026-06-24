@@ -18,9 +18,12 @@ from __future__ import annotations
 import copy
 from datetime import datetime
 from math import radians
+import os
 from pathlib import Path
 
 import numpy as np
+import random
+import torch
 from tqdm import trange
 
 from agents.PPO import PPO_agent
@@ -87,6 +90,16 @@ def make_training_start_sampler(grid_fp: Path, fixed_start: tuple[int, int],
 
     return random_start
 
+def set_all_seeds(seed: int):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    os.environ["PYTHONHASHSEED"] = str(seed)  # controls Python hash randomness
+
 
 # --------------------------------------------------------------------------- #
 # Training / evaluation
@@ -126,6 +139,7 @@ def train_ppo(agent, env, *, max_steps_total: int, max_steps_per_episode: int = 
         (agent, training_history, short_train_agent, mid_train_agent) -- the
         same 4-tuple shape `train_DQN` returns.
     """
+    set_all_seeds(seed)
     agent.set_training(True)
     training_history = []
     step_count = 0
@@ -147,8 +161,9 @@ def train_ppo(agent, env, *, max_steps_total: int, max_steps_per_episode: int = 
 
         for step in range(max_steps_per_episode):
             action = agent.take_action(state)
-            state, reward, terminated, info = env.step(action)
+            new_state, reward, terminated, info = env.step(action)
             agent.update(state, reward, info["actual_action"], terminated)
+            state = new_state
             if path is not None:
                 path.append((env.x, env.y))
             total_reward += reward
@@ -199,8 +214,8 @@ def train_ppo(agent, env, *, max_steps_total: int, max_steps_per_episode: int = 
 
         episode += 1
 
-    agent.finish_rollout()
-    agent.set_training(False)
+    # agent.finish_rollout()
+    # agent.set_training(False)
     return agent, training_history, short_train_agent, mid_train_agent
 
 
