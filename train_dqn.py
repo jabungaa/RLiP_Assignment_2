@@ -36,7 +36,7 @@ def train_DQN(
     epsilon_start: float = 1.0,
     epsilon_end: float = 0.01,
     batch_size: int = 64,
-    replay_buffer_size: int = 10_000,
+    replay_buffer_size: int = 10000,
     target_update_frequency: int = 1000,
     random_seed: int = 0,
     agent_start_pos: tuple[int, int] | None = None,

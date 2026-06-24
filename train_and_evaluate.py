@@ -42,7 +42,8 @@ def parse_args():
     # Shared configurations
     parser.add_argument("--grid", type=Path, default=Path("grid_configs/restaurant_test.npy"), help="Path to the .npy grid file.")
     parser.add_argument("--agents", choices=("dqn", "ppo", "both"), default="ppo", help="Which agent(s) to run.")
-    parser.add_argument("--sigma", type=float, default=0.05, help="Environment stochasticity (training).")
+    parser.add_argument("--ppo_sigma", type=float, default=0.05, help="Environment stochasticity (training).")
+    parser.add_argument("--dqn_sigma", type=float, default=0.1, help="Environment stochasticity (training).")
     parser.add_argument("--eval_sigma", type=float, default=0.0, help="Environment stochasticity (evaluation).")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--start_pos", type=str, default=None, help="Agent start position as row,col.")
@@ -110,6 +111,33 @@ def print_comparison(results: dict):
         print(f"  {label:<25}" + "".join(f"{v:>15}" for v in vals))
     print()
 
+def training_convergence_plot(history: list[dict], agent_name: str, 
+                               results_dir: Path, stamp: str, checking_window: int = 50):
+    """ Plots the steps per episode and rolling avg episode length every 50 training episodes to show convergence"""
+    steps_per_ep = [ep["steps"] for ep in history]
+    steps = np.cumsum([ep["steps"] for ep in history])
+    
+    #use rolling average for smoothing
+    rolling_avg = np.convolve(steps_per_ep, np.ones(checking_window)/checking_window, mode='valid')
+    rolling_avg_steps = steps[checking_window-1:]
+    
+    fig, ax = plt.subplots(figsize=(8, 4))
+    ax.plot(steps, steps_per_ep, alpha=0.2, color="orange", label="Raw")
+    ax.plot(rolling_avg_steps, rolling_avg, color="orange", 
+            label=f"Rolling Avg. (window={checking_window})")
+    ax.set_xlabel("Training Steps")
+    ax.set_ylabel("Steps per Episode")
+    ax.set_title(f"{agent_name} — Steps per Episode in Training")
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    out_path = results_dir / f"{stamp}_{agent_name}_convergence.png"
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Convergence plot saved to {out_path}")
+    return out_path
+
 def main():
     print("ENTERED MAIN")
     args = parse_args()
@@ -136,7 +164,7 @@ def main():
             max_steps_total= args.dqn_max_steps_total,
             n_episodes_epsilon_decay=args.dqn_episodes,
             max_steps_per_episode=args.dqn_max_steps_per_episode,
-            sigma=args.sigma,
+            sigma=args.dqn_sigma,
             learning_rate=args.dqn_lr,
             gamma=args.dqn_gamma,
             random_seed=args.seed,
@@ -144,10 +172,12 @@ def main():
             no_gui=args.no_gui,
             device=args.device,
             # Same dynamics as PPO for a fair head-to-head comparison.
-            agent_radius=0.5,
-            move_distance=0.2,
+            agent_radius=0.2,
+            move_distance=0.5,
             turn_angle_deg=15.0,
         )
+
+        training_convergence_plot(dqn_history, "DQN", args.results_dir, stamp, checking_window=50)
         
         dqn_train_successes = sum(1 for ep in dqn_history if ep["terminated"])
         dqn_metrics = {
@@ -166,9 +196,10 @@ def main():
             agent_start_pos=start_pos,
             no_gui=True,
             episodes=args.eval_episodes,
-            agent_radius=0.5,
-            move_distance=0.2,
+            agent_radius=0.2,
+            move_distance=0.5,
             turn_angle_deg=15.0,
+            optimal_steps=23
         )
 
         mid_train_dqn_eval = evaluate_DQN(
@@ -179,9 +210,10 @@ def main():
             agent_start_pos=start_pos,
             no_gui=True,
             episodes=args.eval_episodes,
-            agent_radius=0.5,
-            move_distance=0.2,
+            agent_radius=0.2,
+            move_distance=0.5,
             turn_angle_deg=15.0,
+            optimal_steps=23
         )
 
         dqn_eval = evaluate_DQN(
@@ -192,9 +224,10 @@ def main():
             agent_start_pos=start_pos,
             no_gui=True,
             episodes=args.eval_episodes,
-            agent_radius=0.5,
-            move_distance=0.2,
+            agent_radius=0.2,
+            move_distance=0.5,
             turn_angle_deg=15.0,
+            optimal_steps=23
         )
         
         # Map DQN keys to standardized metrics keys
@@ -241,24 +274,25 @@ def main():
     if args.agents in ("ppo", "both"):
         print(f"\nStarting PPO Pipeline----------------------------------------------------------------------")
 
-        # Dynamics MUST match evaluation (radius 0.5, move 0.2) — these are the
+        # Dynamics MUST match evaluation (radius 0.2, move 0.5) — these are the
         # values trial 14 was tuned with in the Bayesian search.
         env = EnvironmentContinuous(
             grid_fp=args.grid,
             no_gui=args.no_gui,
-            sigma=args.sigma,
+            sigma=args.ppo_sigma,
             agent_start_pos=start_pos,
             random_seed=args.seed,
-            reward_fn=EnvironmentContinuous._high_reward_function,
-            agent_radius=0.5,
-            move_distance=0.2,
+            reward_fn=EnvironmentContinuous._default_reward_function,
+            agent_radius=0.2,
+            move_distance=0.5,
             turn_angle=radians(15.0),
         )
 
         # Best PPO config from the Bayesian search (trial 14).
         ppo_agent = PPO_agent(
             grid=args.grid,
-            gamma=0.999,
+            gamma=0.99,
+            # gamma=0.999,
             gae_lambda=0.95,
             clip_epsilon=0.1881502205234746,
             policy_lr=0.00028701686449364406,
@@ -266,9 +300,10 @@ def main():
             entropy_coef=0.03824745415070534,
             update_epochs=4,
             minibatch_size=128,
-            rollout_steps=1024,
+            rollout_steps=4096,
             hidden_sizes=(128, 128, 128),
-            reward_scale=1000.0,        # "high" reward goal magnitude
+            # hidden_sizes=(64,64),
+            #reward_scale=1000.0,        # "high" reward goal magnitude
             max_grad_norm=5.0,
             activation="relu",
             seed=args.seed,
@@ -288,6 +323,8 @@ def main():
             # repeat_visit_penalty=0.0
         )
         
+        training_convergence_plot(ppo_history, "PPO", args.results_dir, stamp, checking_window=50)
+
         ppo_train_successes = sum(1 for ep in ppo_history if ep["terminated"])
         ppo_metrics = {
             "train_total_successes": ppo_train_successes,
@@ -306,9 +343,10 @@ def main():
             seed=args.seed,
             episodes=args.eval_episodes,
             max_steps=args.ppo_eval_steps,
-            agent_radius=0.5,
-            move_distance=0.2,
+            agent_radius=0.2,
+            move_distance=0.5,
             turn_angle_deg=15.0,
+            optimal_steps=23
         )
 
         ppo_short_eval = evaluate_ppo(
@@ -321,9 +359,10 @@ def main():
             seed=args.seed,
             episodes=args.eval_episodes,
             max_steps=args.ppo_eval_steps,
-            agent_radius=0.5,
-            move_distance=0.2,
+            agent_radius=0.2,
+            move_distance=0.5,
             turn_angle_deg=15.0,
+            optimal_steps=23
         )
 
         ppo_mid_eval = evaluate_ppo(
@@ -336,20 +375,21 @@ def main():
             seed=args.seed,
             episodes=args.eval_episodes,
             max_steps=args.ppo_eval_steps,
-            agent_radius=0.5,
-            move_distance=0.2,
+            agent_radius=0.2,
+            move_distance=0.5,
             turn_angle_deg=15.0,
+            optimal_steps=23
         )
 
         # Map PPO keys to standardized metrics keys
         ppo_eval_metrics = {
             "eval_total_reward": ppo_full_eval.get("total_reward", 0.0),
-            "eval_steps": ppo_full_eval.get("eval_avg_steps", 0.0),
+            "eval_steps": ppo_full_eval.get("avg_steps", 0.0),
             "eval_success_rate": ppo_full_eval.get("eval_success_rate", 0.0),
-            "eval_spl": ppo_full_eval.get("eval_spl", 0.0),
-            "eval_avg_collisions":ppo_full_eval.get("eval_average_failed_moves", 0.0), 
-            "short_train_eval_spl": ppo_short_eval.get("eval_spl", 0.0),
-            "mid_train_eval_spl": ppo_mid_eval.get("eval_spl", 0.0),
+            "eval_spl": ppo_full_eval.get("SPL", 0.0),
+            "eval_avg_collisions":ppo_full_eval.get("avg_failed_moves", 0.0), 
+            "short_train_eval_spl": ppo_short_eval.get("SPL", 0.0),
+            "mid_train_eval_spl": ppo_mid_eval.get("SPL", 0.0),
         }
         
         # Collect data points

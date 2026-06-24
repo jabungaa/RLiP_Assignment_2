@@ -39,7 +39,7 @@ class EnvironmentContinuous:
 
     N_ACTIONS = 4        # 0 = forward, 1 = turn left, 2 = turn right, 3= move backwards
     N_RAYS = 18 # number of rays in the lidar state representation (18 rays equal a ray every 20 degrees)
-    STATE_SIZE = 4 + N_RAYS # (x, y, theta) + lidar rays
+    STATE_SIZE = 4 + N_RAYS # (x, y, sin(theta), cos(theta)) + lidar rays
 
     def __init__(self,
                  grid_fp: Path,
@@ -410,11 +410,11 @@ class EnvironmentContinuous:
         if target_reached:
             return 1
         if collided:
-            return -0.25
+            return -0.025
         if moved:
-            return -0.001
+            return -0.0001
         else:
-            return -0.01
+            return -0.001
 
 
     @staticmethod
@@ -460,7 +460,7 @@ class EnvironmentContinuous:
         
         # add lidar rays to visualizations
         ray_angles = [self.theta + i * ((2*pi)/self.N_RAYS) for i in range(self.N_RAYS)]
-        ray_lengths = self._get_state()[3:] # the first 3 elements of the state are (x, y, theta), the rest are lidar rays
+        ray_lengths = self._get_state()[4:] * self.MAX_LIDAR_RANGE # the first 4 elements of the state are (x, y, sin(theta), cos(theta)), the rest are lidar rays
         for ray_angle, ray_length in zip(ray_angles, ray_lengths):
             end_x = self.x + ray_length * cos(ray_angle)
             end_y = self.y - ray_length * sin(ray_angle) #updated sin to negative because the y-axis is inverted in the GUI (y increases downwards)

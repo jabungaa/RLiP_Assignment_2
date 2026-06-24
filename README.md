@@ -1,6 +1,15 @@
+This is the code I used to run it:
+python train_and_evaluate.py --grid grid_configs/restaurant_medium.npy --agents both --eval_sigma 0.1 --seed 43 --start_pos 18,10 --ppo_max_steps_total 400000 --ppo_short_train 100000 --ppo_mid_train 200000 --ppo_eval_steps 2000 --ppo_max_steps_per_episode 2000 --device cpu --dqn_max_steps_total 400000 --dqn_short_train 100000 --dqn_mid_train 200000 --dqn_max_steps_per_episode 2000 --eval_episodes 30 --no_gui 
+
+Should you expect convergence?
+Honestly, not guaranteed
+Partial convergence is actually the most likely outcome and is a valid result to report — it shows the algorithm is learning something meaningful but hasn't fully solved the task, which is honest and scientifically interesting. For a coursework submission this is arguably better than claiming full convergence on insufficient training steps, since you can discuss why it plateaued.
+
 
 Welcome to Data Intelligence Challenge-2AMC15!
 This is the repository containing the challenge environment code.
+
+
 
 ## Quickstart
 

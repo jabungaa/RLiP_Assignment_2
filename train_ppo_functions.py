@@ -93,59 +93,80 @@ def train_ppo(agent, env,  start_pos, max_steps_total: int=500000, short_train_s
 
 def evaluate_ppo(agent, Environment, grid_fp, reward_fn, start_pos, sigma,
                  seed, episodes, max_steps, agent_radius=0.2,
-                 move_distance=0.2, turn_angle_deg=15.0):
-    agent.set_training(False)
+                 move_distance=0.2, turn_angle_deg=15.0, optimal_steps: int = 23):
+    
+    from evaluation import evaluate_agent
 
-    cumulative_total_reward=0
-    step_counter=0
-    SPL=0
-    failed_moves=0
-    targets_reached=0
-
-    for ep in trange(episodes, desc="Evaluating PPO"):
-        env = Environment(
-            grid_fp=grid_fp,
-            no_gui=True,
-            sigma=sigma,
-            agent_start_pos=start_pos,
-            random_seed=seed + ep,
-            reward_fn=reward_fn,
-            target_fps=-1,
-            agent_radius=agent_radius,
-            move_distance=move_distance,
-            turn_angle=radians(turn_angle_deg),
-        )
-        state = env.reset()
-        path = [(env.x, env.y)]
-        actions = []
-        terminated = False
-        total_reward=0
-        for step in range(max_steps):
-            action = agent.take_action(state)
-            actions.append(action)
-            state, _reward, terminated, _info = env.step(action)
-            path.append((env.x, env.y))
-            step_counter+=1
-            total_reward+=_reward
-            if terminated:
-                break
-        
-        SPL+=terminated*23/(step+1) #this is currently hardcoded for the medium grid start position (18,10) where 23 is the optimal number of steps with step size of 0.5
-        failed_moves+=env.world_stats.get("total_failed_moves", 0)
-        targets_reached+=terminated
-        cumulative_total_reward+=total_reward
-    SPL=SPL/episodes
-    avg_steps=step_counter/episodes
-    avg_total_reward=cumulative_total_reward/episodes
-    avg_failed_moves=failed_moves/episodes
-    avg_success_rate=targets_reached/episodes
-    eval_metrics= {
-        "eval_success_rate": avg_success_rate if episodes > 0 else 0.0,
-        "eval_spl": float(SPL),
-        "total_reward": avg_total_reward,
-        "eval_avg_steps": float(avg_steps),
-        "eval_avg_failed_moves": float(avg_failed_moves),
+    res = evaluate_agent(
+        agent, grid_fp,
+        episodes=episodes,
+        max_steps=max_steps,
+        sigma=sigma,
+        agent_start_pos=start_pos,
+        seed=seed,
+        reward_fn=reward_fn,
+        move_distance=move_distance,
+        optimal_steps=optimal_steps,
+    )
+    return {
+        "eval_success_rate": res["eval_success_rate"],
+        "SPL": res["eval_avg_spl"] if res["eval_avg_spl"] is not None else 0.0,
+        "total_reward": res["eval_avg_reward"],
+        "avg_steps": res["eval_avg_steps"],
+        "avg_failed_moves": res["eval_avg_failed_moves"],
     }
-    return eval_metrics
+    # agent.set_training(False)
+
+    # cumulative_total_reward=0
+    # step_counter=0
+    # SPL=0
+    # failed_moves=0
+    # targets_reached=0
+
+    # for ep in trange(episodes, desc="Evaluating PPO"):
+    #     env = Environment(
+    #         grid_fp=grid_fp,
+    #         no_gui=True,
+    #         sigma=sigma,
+    #         agent_start_pos=start_pos,
+    #         random_seed=seed + ep,
+    #         reward_fn=reward_fn,
+    #         target_fps=-1,
+    #         agent_radius=agent_radius,
+    #         move_distance=move_distance,
+    #         turn_angle=radians(turn_angle_deg),
+    #     )
+    #     state = env.reset()
+    #     path = [(env.x, env.y)]
+    #     actions = []
+    #     terminated = False
+    #     total_reward=0
+    #     for step in range(max_steps):
+    #         action = agent.take_action(state)
+    #         actions.append(action)
+    #         state, _reward, terminated, _info = env.step(action)
+    #         path.append((env.x, env.y))
+    #         step_counter+=1
+    #         total_reward+=_reward
+    #         if terminated:
+    #             break
+        
+    #     SPL+=terminated*23/(step+1) #this is currently hardcoded for the medium grid start position (18,10) where 23 is the optimal number of steps with step size of 0.5
+    #     failed_moves+=env.world_stats.get("total_failed_moves", 0)
+    #     targets_reached+=terminated
+    #     cumulative_total_reward+=total_reward
+    # SPL=SPL/episodes
+    # avg_steps=step_counter/episodes
+    # avg_total_reward=cumulative_total_reward/episodes
+    # avg_failed_moves=failed_moves/episodes
+    # avg_success_rate=targets_reached/episodes
+    # eval_metrics= {
+    #     "eval_success_rate": avg_success_rate if episodes > 0 else 0.0,
+    #     "eval_spl": float(SPL),
+    #     "total_reward": avg_total_reward,
+    #     "eval_avg_steps": float(avg_steps),
+    #     "eval_avg_failed_moves": float(avg_failed_moves),
+    # }
+    # return eval_metrics
 
 

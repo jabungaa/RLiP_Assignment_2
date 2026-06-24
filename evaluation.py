@@ -22,6 +22,7 @@ import random
 from datetime import datetime
 from math import radians
 from pathlib import Path
+from tqdm import trange
 
 import numpy as np
 from shapely.geometry import Point
@@ -149,7 +150,7 @@ def evaluate_agent(
     )
 
     try:
-        for ep in range(episodes):
+        for ep in trange(episodes):
             random.seed(seed + ep)
             state = env.reset()
             _begin_episode(agent, state)
