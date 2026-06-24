@@ -178,7 +178,7 @@ def main():
     # the SPL baseline for BOTH agents so their SPL/AUC are directly comparable.
     from optimal_path import approx_optimal_for_grid
     baseline_steps = approx_optimal_for_grid(
-        args.grid, start_pos, agent_radius=0.5, move_distance=0.2, turn_angle_deg=15.0)
+        args.grid, start_pos, agent_radius=args.agent_radius, move_distance=args.move_distance, turn_angle_deg=args.turn_angle_deg)
     print(f"SPL baseline (approx optimal from {start_pos}): {baseline_steps} steps")
 
     all_results = {}
@@ -279,7 +279,8 @@ def main():
         # and report the rate of achieving the optimal path length.
         dqn_success_rate, dqn_optimal_rate = path_quality_rates(
             dqn_agent, args.grid, start_pos, args.eval_sigma, args.seed,
-            args.eval_episodes, args.dqn_max_steps_per_episode)
+            args.eval_episodes, args.dqn_max_steps_per_episode,
+            agent_radius=args.agent_radius, move_distance=args.move_distance, turn_angle_deg=args.turn_angle_deg)
         dqn_eval_metrics["eval_success_rate"] = dqn_success_rate
         dqn_eval_metrics["optimal_rate"] = dqn_optimal_rate
 
@@ -438,7 +439,8 @@ def main():
         # and report the rate of achieving the optimal path length.
         ppo_success_rate, ppo_optimal_rate = path_quality_rates(
             ppo_full_train_agent, args.grid, start_pos, args.eval_sigma, args.seed,
-            args.eval_episodes, args.ppo_eval_steps)
+            args.eval_episodes, args.ppo_eval_steps, 
+            agent_radius=args.agent_radius, move_distance=args.move_distance, turn_angle_deg=args.turn_angle_deg)
         ppo_eval_metrics["eval_success_rate"] = ppo_success_rate
         ppo_eval_metrics["optimal_rate"] = ppo_optimal_rate
 
